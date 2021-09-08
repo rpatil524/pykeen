@@ -4,9 +4,11 @@
 
 import tempfile
 import unittest
+from unittest.mock import MagicMock
 
 import optuna
 import pytest
+from optuna.trial import TrialState
 
 from pykeen.datasets.nations import (
     NATIONS_TEST_PATH, NATIONS_TRAIN_PATH, NATIONS_VALIDATE_PATH, Nations,
@@ -14,6 +16,7 @@ from pykeen.datasets.nations import (
 )
 from pykeen.hpo import hpo_pipeline
 from pykeen.hpo.hpo import suggest_kwargs
+from pykeen.trackers import ResultTracker, tracker_resolver
 from pykeen.triples import TriplesFactory
 
 
@@ -122,15 +125,10 @@ class TestHyperparameterOptimization(unittest.TestCase):
 
     def test_sampling_values_from_2_power_x(self):
         """Test making a study that has a range defined by f(x) = 2^x."""
-
-        def objective(trial):
-            suggest_kwargs(prefix='model', trial=trial, kwargs_ranges=model_kwargs_ranges)
-            return 1.
-
         model_kwargs_ranges = dict(
             embedding_dim=dict(type=int, low=0, high=4, scale='power_two'),
         )
-
+        objective = _test_suggest(model_kwargs_ranges)
         study = optuna.create_study()
         study.optimize(objective, n_trials=2)
 
@@ -138,14 +136,58 @@ class TestHyperparameterOptimization(unittest.TestCase):
         self.assertIn(('params', 'model.embedding_dim'), df.columns)
         self.assertTrue(df[('params', 'model.embedding_dim')].isin({1, 2, 4, 8, 16}).all())
 
-        model_kwargs_ranges = dict(
-            embedding_dim=dict(type=int, low=0, high=4, scale='power_two'),
-        )
-
+        objective = _test_suggest(model_kwargs_ranges)
         with self.assertRaises(Exception) as context:
             study = optuna.create_study()
             study.optimize(objective, n_trials=2)
             self.assertIn('Upper bound 4 is not greater than lower bound 4.', context.exception)
+
+    def test_sampling_values_from_power_x(self):
+        """Test making a study that has a range defined by f(x) = base^x."""
+        kwargs_ranges = dict(
+            embedding_dim=dict(type=int, low=0, high=2, scale='power', base=10),
+        )
+        objective = _test_suggest(kwargs_ranges)
+        study = optuna.create_study()
+        study.optimize(objective, n_trials=2)
+
+        df = study.trials_dataframe(multi_index=True)
+        self.assertIn(('params', 'model.embedding_dim'), df.columns)
+        values = df[('params', 'model.embedding_dim')]
+        self.assertTrue(values.isin({1, 10, 100}).all(), msg=f'Got values: {values}')
+
+    def test_failing_trials(self):
+        """Test whether failing trials are correctly reported."""
+
+        class MockResultTracker(MagicMock, ResultTracker):
+            """A mock result tracker."""
+
+        tracker_resolver.register(cls=MockResultTracker)
+
+        mock_result_tracker = MockResultTracker()
+        mock_result_tracker.end_run = MagicMock()
+        result = hpo_pipeline(
+            dataset="nations",
+            model="distmult",
+            model_kwargs_ranges=dict(
+                embedding_dim=dict(
+                    type=int, low=-10, high=-1,  # will fail
+                ),
+            ),
+            n_trials=1,
+            result_tracker=mock_result_tracker,
+        )
+        # verify failure
+        assert all(t.state == TrialState.FAIL for t in result.study.trials)
+        assert all(ca[1]["success"] is False for ca in mock_result_tracker.end_run.call_args_list)
+
+
+def _test_suggest(kwargs_ranges):
+    def objective(trial):
+        suggest_kwargs(prefix='model', trial=trial, kwargs_ranges=kwargs_ranges)
+        return 1.
+
+    return objective
 
 
 @pytest.mark.slow

@@ -2,14 +2,20 @@
 
 """Run dataset CLI."""
 
+import itertools as itt
 import logging
 import pathlib
 from textwrap import dedent
 from typing import Union
 
 import click
+import docdata
+import pandas as pd
 from more_click import verbose_option
 from tqdm import tqdm
+
+from . import dataset_resolver, get_dataset
+from ..constants import PYKEEN_DATASETS
 
 
 @click.group()
@@ -31,10 +37,8 @@ def summarize():
 
 
 def _iter_datasets(regex_name_filter=None):
-    from . import datasets
-    import docdata
     it = sorted(
-        datasets.items(),
+        dataset_resolver.lookup_dict.items(),
         key=lambda pair: docdata.get_docdata(pair[1])['statistics']['triples'],
     )
     if regex_name_filter is not None:
@@ -68,12 +72,8 @@ def analyze(dataset, force: bool, countplots: bool, directory):
 
 
 def _analyze(dataset, force, countplots, directory: Union[None, str, pathlib.Path]):
-    from pykeen.datasets import get_dataset
-    from pykeen.constants import PYKEEN_DATASETS
     from . import analysis
-    from tqdm import tqdm
-    import pandas as pd
-    import docdata
+
     try:
         import matplotlib.pyplot as plt
         import seaborn as sns
@@ -172,6 +172,40 @@ def _analyze(dataset, force, countplots, directory: Union[None, str, pathlib.Pat
         fig.tight_layout()
         fig.savefig(d.joinpath('relation_counts.svg'))
         plt.close(fig)
+
+
+@main.command()
+@verbose_option
+@click.option('--dataset', help='Regex for filtering datasets by name')
+def verify(dataset: str):
+    """Verify dataset integrity."""
+    data = []
+    keys = None
+    for name, dataset in _iter_datasets(regex_name_filter=dataset):
+        dataset_instance = get_dataset(dataset=dataset)
+        data.append(list(itt.chain(
+            [name],
+            itt.chain.from_iterable(
+                (triples_factory.num_entities, triples_factory.num_relations)
+                for _, triples_factory in sorted(dataset_instance.factory_dict.items())
+            ),
+        )))
+        keys = keys or sorted(dataset_instance.factory_dict.keys())
+    if not keys:
+        return
+    df = pd.DataFrame(
+        data=data,
+        columns=["name"] + [f"num_{part}_{a}" for part in keys for a in ("entities", "relations")],
+    )
+    valid = None
+    for part, a in itt.product(("validation", "testing"), ("entities", "relations")):
+        this_valid = df[f"num_training_{a}"] == df[f"num_{part}_{a}"]
+        if valid is None:
+            valid = this_valid
+        else:
+            valid = valid & this_valid
+    df["valid"] = valid
+    print(df.to_markdown())
 
 
 if __name__ == '__main__':

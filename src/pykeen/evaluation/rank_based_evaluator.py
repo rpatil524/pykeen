@@ -78,7 +78,10 @@ TYPES_REALISTIC_ONLY = {ADJUSTED_ARITHMETIC_MEAN_RANK, ADJUSTED_ARITHMETIC_MEAN_
 METRIC_SYNONYMS = {
     'adjusted_mean_rank': ADJUSTED_ARITHMETIC_MEAN_RANK,
     'adjusted_mean_rank_index': ADJUSTED_ARITHMETIC_MEAN_RANK_INDEX,
+    'aamr': ADJUSTED_ARITHMETIC_MEAN_RANK,
+    'aamri': ADJUSTED_ARITHMETIC_MEAN_RANK_INDEX,
     'igmr': INVERSE_GEOMETRIC_MEAN_RANK,
+    'iamr': INVERSE_ARITHMETIC_MEAN_RANK,
     'mr': ARITHMETIC_MEAN_RANK,
     'mean_rank': ARITHMETIC_MEAN_RANK,
     'mrr': INVERSE_HARMONIC_MEAN_RANK,
@@ -431,11 +434,11 @@ class RankBasedEvaluator(Evaluator):
             if len(ranks) < 1:
                 continue
             hits_at_k[side][rank_type] = {
-                k: np.mean(ranks <= (k if isinstance(k, int) else int(self.num_entities * k)))
+                k: np.mean(ranks <= (k if isinstance(k, int) else int(self.num_entities * k))).item()
                 for k in self.ks
             }
             for metric_name, metric_func in all_type_funcs.items():
-                asr[metric_name][side][rank_type] = metric_func(ranks)
+                asr[metric_name][side][rank_type] = metric_func(ranks).item()
 
             expected_rank_type = EXPECTED_RANKS.get(rank_type)
             if expected_rank_type:

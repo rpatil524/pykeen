@@ -13,7 +13,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from hashlib import md5
 from tempfile import NamedTemporaryFile
-from typing import Any, IO, List, Mapping, Optional, Tuple, Type, Union
+from typing import Any, ClassVar, Generic, IO, List, Mapping, Optional, Tuple, Type, TypeVar, Union
 
 import numpy as np
 import torch
@@ -21,14 +21,15 @@ from torch.optim.optimizer import Optimizer
 from torch.utils.data import DataLoader
 from tqdm.autonotebook import tqdm, trange
 
+from .callbacks import MultiTrainingCallback, TrackerCallback, TrainingCallbackHint
 from ..constants import PYKEEN_CHECKPOINTS, PYKEEN_DEFAULT_CHECKPOINT
-from ..losses import Loss, has_mr_loss, has_nssa_loss
+from ..losses import Loss
+from ..lr_schedulers import LRScheduler
 from ..models import Model, RGCN
 from ..stoppers import Stopper
 from ..trackers import ResultTracker
 from ..training.schlichtkrull_sampler import GraphSampler
-from ..triples import CoreTriplesFactory, Instances
-from ..typing import MappedTriples
+from ..triples import CoreTriplesFactory, Instances, TriplesFactory
 from ..utils import (
     format_relative_comparison, get_batchnorm_modules, is_cuda_oom_error, is_cudnn_error,
     normalize_string,
@@ -42,6 +43,9 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+SampleType = TypeVar("SampleType")
+BatchType = TypeVar("BatchType")
 
 
 class NonFiniteLossError(RuntimeError):
@@ -75,16 +79,30 @@ def _get_optimizer_kwargs(optimizer: Optimizer) -> Mapping[str, Any]:
     optimizer_kwargs = {
         key: value
         for key, value in optimizer_kwargs['param_groups'][0].items()
-        if key != 'params'
+        if key not in ['params', 'initial_lr']
     }
     return optimizer_kwargs
 
 
-class TrainingLoop(ABC):
+def _get_lr_scheduler_kwargs(lr_scheduler: LRScheduler) -> Mapping[str, Any]:
+    lr_scheduler_kwargs = lr_scheduler.state_dict()
+    lr_scheduler_kwargs = {
+        key: value
+        for key, value in lr_scheduler_kwargs.items()
+        if not key.startswith('_') and key not in ['base_lrs', 'last_epoch']
+    }
+    return lr_scheduler_kwargs
+
+
+class TrainingLoop(Generic[SampleType, BatchType], ABC):
     """A training loop."""
 
+    lr_scheduler: Optional[LRScheduler]
+    model: Model
+    optimizer: Optimizer
+
     losses_per_epochs: List[float]
-    loss_blacklist: Optional[List[Type[Loss]]] = None
+    loss_blacklist: ClassVar[Optional[List[Type[Loss]]]] = None
 
     hpo_default = dict(
         num_epochs=dict(type=int, low=100, high=1000, q=100),
@@ -96,6 +114,7 @@ class TrainingLoop(ABC):
         model: Model,
         triples_factory: CoreTriplesFactory,
         optimizer: Optional[Optimizer] = None,
+        lr_scheduler: Optional[LRScheduler] = None,
         automatic_memory_optimization: bool = True,
     ) -> None:
         """Initialize the training loop.
@@ -103,12 +122,14 @@ class TrainingLoop(ABC):
         :param model: The model to train
         :param triples_factory: The training triples factory
         :param optimizer: The optimizer to use while training the model
+        :param lr_scheduler: The learning rate scheduler you want to use while training the model
         :param automatic_memory_optimization: bool
             Whether to automatically optimize the sub-batch size during
             training and batch size during evaluation with regards to the hardware at hand.
         """
         self.model = model
         self.optimizer = optimizer
+        self.lr_scheduler = lr_scheduler
         self.losses_per_epochs = []
         self.automatic_memory_optimization = automatic_memory_optimization
 
@@ -119,13 +140,6 @@ class TrainingLoop(ABC):
                 f'Can not use loss {self.model.loss.__class__.__name__}'
                 f' with training approach {self.__class__.__name__}',
             )
-
-        if has_mr_loss(self.model):
-            self._loss_helper = self._mr_loss_helper
-        elif has_nssa_loss(self.model):
-            self._loss_helper = self._self_adversarial_negative_sampling_loss_helper
-        else:
-            self._loss_helper = self._label_loss_helper  # type: ignore
 
         # The internal epoch state tracks the last finished epoch of the training loop to allow for
         # seamless loading and saving of training checkpoints
@@ -140,6 +154,11 @@ class TrainingLoop(ABC):
     def device(self):  # noqa: D401
         """The device used by the model."""
         return self.model.device
+
+    @property
+    def loss(self):  # noqa: D401
+        """The loss used by the model."""
+        return self.model.loss
 
     @property
     def checksum(self) -> str:  # noqa: D401
@@ -172,11 +191,12 @@ class TrainingLoop(ABC):
         checkpoint_frequency: Optional[int] = None,
         checkpoint_on_failure: bool = False,
         drop_last: Optional[bool] = None,
+        callbacks: TrainingCallbackHint = None,
     ) -> Optional[List[float]]:
         """Train the KGE model.
 
         :param triples_factory:
-            The training triples factory
+            The training triples.
         :param num_epochs:
             The number of epochs to train the model.
         :param batch_size:
@@ -228,6 +248,9 @@ class TrainingLoop(ABC):
         :param drop_last:
             Whether to drop the last batch in each epoch to prevent smaller batches. Defaults to False, except if the
             model contains batch normalization layers. Can be provided explicitly to override.
+        :param callbacks:
+            An optional :class:`pykeen.training.TrainingCallback` or collection of callback instances that define
+            one of several functionalities. Their interface was inspired by Keras.
 
         :return:
             The losses per epoch.
@@ -254,7 +277,10 @@ class TrainingLoop(ABC):
         if checkpoint_name:
             checkpoint_path = checkpoint_directory.joinpath(checkpoint_name)
             if checkpoint_path.is_file():
-                best_epoch_model_file_path, last_best_epoch = self._load_state(path=checkpoint_path)
+                best_epoch_model_file_path, last_best_epoch = self._load_state(
+                    path=checkpoint_path,
+                    triples_factory=triples_factory,
+                )
                 if stopper is not None:
                     stopper_dict = stopper.load_summary_dict_from_training_loop_checkpoint(path=checkpoint_path)
                     # If the stopper dict has any keys, those are written back to the stopper
@@ -312,6 +338,7 @@ class TrainingLoop(ABC):
                 best_epoch_model_file_path=best_epoch_model_file_path,
                 last_best_epoch=last_best_epoch,
                 drop_last=drop_last,
+                callbacks=callbacks,
                 triples_factory=triples_factory,
                 training_instances=training_instances,
             )
@@ -322,6 +349,7 @@ class TrainingLoop(ABC):
         # Clear optimizer
         if clear_optimizer:
             self.optimizer = None
+            self.lr_scheduler = None
 
         return result
 
@@ -350,6 +378,7 @@ class TrainingLoop(ABC):
         best_epoch_model_file_path: Optional[pathlib.Path] = None,
         last_best_epoch: Optional[int] = None,
         drop_last: Optional[bool] = None,
+        callbacks: TrainingCallbackHint = None,
     ) -> Optional[List[float]]:
         """Train the KGE model.
 
@@ -410,10 +439,10 @@ class TrainingLoop(ABC):
         # When using early stopping models have to be saved separately at the best epoch, since the training loop will
         # due to the patience continue to train after the best epoch and thus alter the model
         if (
-                stopper is not None
-                and not only_size_probing
-                and last_best_epoch is None
-                and best_epoch_model_file_path is None
+            stopper is not None
+            and not only_size_probing
+            and last_best_epoch is None
+            and best_epoch_model_file_path is None
         ):
             # Create a path
             best_epoch_model_file_path = pathlib.Path(NamedTemporaryFile().name)
@@ -424,6 +453,14 @@ class TrainingLoop(ABC):
                 'Using RGCN without graph-based sampling! Please select sampler="schlichtkrull" instead of %s.',
                 sampler,
             )
+
+        # Prepare all of the callbacks
+        callback = MultiTrainingCallback(callbacks)
+        # Register a callback for the result tracker, if given
+        if result_tracker is not None:
+            callback.register_callback(TrackerCallback(result_tracker))
+
+        callback.register_training_loop(self)
 
         # Take the biggest possible training batch_size, if batch_size not set
         batch_size_sufficient = False
@@ -461,10 +498,6 @@ class TrainingLoop(ABC):
                 training_instances=training_instances,
             )
 
-        # Create dummy result tracker
-        if result_tracker is None:
-            result_tracker = ResultTracker()
-
         if sub_batch_size is None or sub_batch_size == batch_size:  # by default do not split batches in sub-batches
             sub_batch_size = batch_size
         elif get_batchnorm_modules(self.model):  # if there are any, this is truthy
@@ -481,10 +514,6 @@ class TrainingLoop(ABC):
                     format_relative_comparison(part=1, total=len(training_instances)),
                 )
 
-        # Sanity check
-        if has_mr_loss(self.model) and label_smoothing > 0.:
-            raise RuntimeError('Label smoothing can not be used with margin ranking loss.')
-
         # Force weight initialization if training continuation is not explicitly requested.
         if not continue_training:
             # Reset the weights
@@ -496,6 +525,11 @@ class TrainingLoop(ABC):
                 params=self.model.get_grad_params(),
                 **optimizer_kwargs,
             )
+
+            if self.lr_scheduler is not None:
+                # Create a new lr scheduler and add the optimizer
+                lr_scheduler_kwargs = _get_lr_scheduler_kwargs(self.lr_scheduler)
+                self.lr_scheduler = self.lr_scheduler.__class__(self.optimizer, **lr_scheduler_kwargs)
         elif not self.optimizer.state:
             raise ValueError('Cannot continue_training without being trained once.')
 
@@ -585,7 +619,7 @@ class TrainingLoop(ABC):
                         stop = min(start + sub_batch_size, current_batch_size)
 
                         # forward pass call
-                        current_epoch_loss += self._forward_pass(
+                        batch_loss = self._forward_pass(
                             batch,
                             start,
                             stop,
@@ -593,6 +627,8 @@ class TrainingLoop(ABC):
                             label_smoothing,
                             slice_size,
                         )
+                        current_epoch_loss += batch_loss
+                        callback.on_batch(epoch=epoch, batch=batch, batch_loss=batch_loss)
 
                     # when called by batch_size_search(), the parameter update should not be applied.
                     if not only_size_probing:
@@ -607,6 +643,8 @@ class TrainingLoop(ABC):
                     if only_size_probing and evaluated_once:
                         break
 
+                    callback.post_batch(epoch=epoch, batch=batch)
+
                     evaluated_once = True
 
                 del batch
@@ -619,10 +657,13 @@ class TrainingLoop(ABC):
                 if only_size_probing:
                     return None
 
+                # Update learning rate scheduler
+                if self.lr_scheduler is not None:
+                    self.lr_scheduler.step(epoch=epoch)
+
                 # Track epoch loss
                 epoch_loss = current_epoch_loss / num_training_instances
                 self.losses_per_epochs.append(epoch_loss)
-                result_tracker.log_metrics({'loss': epoch_loss}, step=epoch)
 
                 # Print loss information to console
                 if _use_outer_tqdm:
@@ -635,18 +676,25 @@ class TrainingLoop(ABC):
                 self._epoch = epoch
 
                 should_stop = False
-                if stopper is not None and stopper.should_evaluate(epoch) and stopper.should_stop(epoch):
-                    should_stop = True
+                if stopper is not None and stopper.should_evaluate(epoch):
+                    if stopper.should_stop(epoch):
+                        should_stop = True
+                    # Since the model is also used within the stopper, its graph and cache have to be cleared
+                    self._free_graph_and_cache()
                 # When the stopper obtained a new best epoch, this model has to be saved for reconstruction
                 if (
-                        stopper is not None
-                        and stopper.best_epoch != last_best_epoch
-                        and best_epoch_model_file_path is not None
+                    stopper is not None
+                    and stopper.best_epoch != last_best_epoch
+                    and best_epoch_model_file_path is not None
                 ):
-                    self._save_state(path=best_epoch_model_file_path)
+                    self._save_state(path=best_epoch_model_file_path, triples_factory=triples_factory)
                     last_best_epoch = epoch
             # When the training loop failed, a fallback checkpoint is created to resume training.
             except (MemoryError, RuntimeError) as e:
+                # During automatic memory optimization only the error message is of interest
+                if only_size_probing:
+                    raise e
+
                 logger.warning(f'The training loop just failed during epoch {epoch} due to error {str(e)}.')
                 if checkpoint_on_failure_file_path:
                     # When there wasn't a best epoch the checkpoint path should be None
@@ -656,17 +704,21 @@ class TrainingLoop(ABC):
                         path=checkpoint_on_failure_file_path,
                         stopper=stopper,
                         best_epoch_model_checkpoint_file_path=best_epoch_model_checkpoint_file_path,
+                        triples_factory=triples_factory,
                     )
                     logger.warning(
-                        "However, don't worry we got you covered. PyKEEN just saved a checkpoint when this happened "
-                        f"at '{checkpoint_on_failure_file_path}'. To resume training from the checkpoint file just "
-                        f"restart your code and pass this file path to the training loop or pipeline you used "
-                        f"as 'checkpoint_file' argument.",
+                        "However, don't worry we got you covered. PyKEEN just saved a checkpoint when this "
+                        f"happened at '{checkpoint_on_failure_file_path}'. To resume training from the checkpoint "
+                        f"file just restart your code and pass this file path to the training loop or pipeline you "
+                        f"used as 'checkpoint_file' argument.",
                     )
                 # Delete temporary best epoch model
                 if best_epoch_model_file_path is not None and best_epoch_model_file_path.is_file():
                     os.remove(best_epoch_model_file_path)
                 raise e
+
+            # Includes a call to result_tracker.log_metrics
+            callback.post_epoch(epoch=epoch, epoch_loss=epoch_loss)
 
             # If a checkpoint file is given, we check whether it is time to save a checkpoint
             if save_checkpoints and checkpoint_path is not None:
@@ -684,6 +736,7 @@ class TrainingLoop(ABC):
                         path=checkpoint_path,
                         stopper=stopper,
                         best_epoch_model_checkpoint_file_path=best_epoch_model_checkpoint_file_path,
+                        triples_factory=triples_factory,
                     )  # type: ignore
                     last_checkpoint = time.time()
 
@@ -693,6 +746,8 @@ class TrainingLoop(ABC):
                 if pathlib.Path.is_file(best_epoch_model_file_path):
                     os.remove(best_epoch_model_file_path)
                 return self.losses_per_epochs
+
+        callback.post_train(losses=self.losses_per_epochs)
 
         # If the stopper didn't stop the training loop but derived a best epoch, the model has to be reconstructed
         # at that state
@@ -704,7 +759,15 @@ class TrainingLoop(ABC):
 
         return self.losses_per_epochs
 
-    def _forward_pass(self, batch, start, stop, current_batch_size, label_smoothing, slice_size):
+    def _forward_pass(
+        self,
+        batch: BatchType,
+        start: int,
+        stop: int,
+        current_batch_size: int,
+        label_smoothing: float,
+        slice_size: Optional[int],
+    ) -> float:
         # forward pass
         loss = self._process_batch(
             batch=batch,
@@ -734,7 +797,7 @@ class TrainingLoop(ABC):
 
     @staticmethod
     @abstractmethod
-    def _get_batch_size(batch: Union[MappedTriples, Tuple[MappedTriples, torch.FloatTensor]]) -> int:
+    def _get_batch_size(batch: BatchType) -> int:
         """Get the batch size from a (sub-) batch."""
         raise NotImplementedError
 
@@ -746,7 +809,7 @@ class TrainingLoop(ABC):
     @abstractmethod
     def _process_batch(
         self,
-        batch: Any,
+        batch: BatchType,
         start: int,
         stop: int,
         label_smoothing: float = 0.0,
@@ -975,30 +1038,6 @@ class TrainingLoop(ABC):
 
         return sub_batch_size, finished_search, supports_sub_batching
 
-    def _mr_loss_helper(
-        self,
-        positive_scores: torch.FloatTensor,
-        negative_scores: torch.FloatTensor,
-        _label_smoothing=None,
-    ) -> torch.FloatTensor:
-        raise NotImplementedError
-
-    def _label_loss_helper(
-        self,
-        positive_scores: torch.FloatTensor,
-        negative_scores: torch.FloatTensor,
-        label_smoothing: float,
-    ) -> torch.FloatTensor:
-        raise NotImplementedError
-
-    def _self_adversarial_negative_sampling_loss_helper(
-        self,
-        positive_scores: torch.FloatTensor,
-        negative_scores: torch.FloatTensor,
-        _label_smoothing=None,
-    ) -> torch.FloatTensor:
-        raise NotImplementedError
-
     def _free_graph_and_cache(self):
         self.model._free_graph_and_cache()
         # The cache of the previous run has to be freed to allow accurate memory availability estimates
@@ -1009,6 +1048,7 @@ class TrainingLoop(ABC):
         path: Union[IO[bytes], str, pathlib.Path],
         stopper: Optional[Stopper] = None,
         best_epoch_model_checkpoint_file_path: Optional[pathlib.Path] = None,
+        triples_factory: Optional[CoreTriplesFactory] = None,
     ) -> None:
         """Save the state of the training loop.
 
@@ -1019,6 +1059,8 @@ class TrainingLoop(ABC):
             if training should stop early
         :param best_epoch_model_checkpoint_file_path:
             The file path for the checkpoint of the best epoch model when using early stopping.
+        :param triples_factory:
+            The triples factory being used in the current training loop.
         """
         if self.optimizer is None:
             raise ValueError
@@ -1041,12 +1083,24 @@ class TrainingLoop(ABC):
         else:
             best_epoch_model_checkpoint = None
 
+        if self.lr_scheduler is None:
+            lr_scheduler_state_dict = None
+        else:
+            lr_scheduler_state_dict = self.lr_scheduler.state_dict()
+
+        relation_to_id_dict = None
+        entity_to_id_dict = None
+        if triples_factory is not None and isinstance(triples_factory, TriplesFactory):
+            relation_to_id_dict = triples_factory.relation_to_id
+            entity_to_id_dict = triples_factory.entity_to_id
+
         torch.save(
             {
                 'epoch': self._epoch,
                 'loss': self.losses_per_epochs,
                 'model_state_dict': self.model.state_dict(),
                 'optimizer_state_dict': self.optimizer.state_dict(),
+                'lr_scheduler_state_dict': lr_scheduler_state_dict,
                 'checksum': self.checksum,
                 'random_seed': self.model._random_seed,
                 'stopper_dict': stopper_dict,
@@ -1056,6 +1110,9 @@ class TrainingLoop(ABC):
                 'torch_cuda_random_state': torch_cuda_random_state,
                 # This is an entire checkpoint for the optional best model when using early stopping
                 'best_epoch_model_checkpoint': best_epoch_model_checkpoint,
+                # Saving triples factory related states
+                'relation_to_id_dict': relation_to_id_dict,
+                'entity_to_id_dict': entity_to_id_dict,
             },
             path,
             pickle_protocol=pickle.HIGHEST_PROTOCOL,
@@ -1063,13 +1120,18 @@ class TrainingLoop(ABC):
         logger.info(f"=> Saved checkpoint after having finished epoch {self._epoch}.")
 
     def _load_state(
-            self,
-            path: Union[str, pathlib.Path],
+        self,
+        path: Union[str, pathlib.Path],
+        triples_factory: Optional[CoreTriplesFactory] = None,
     ) -> Tuple[Optional[pathlib.Path], Optional[int]]:
         """Load the state of the training loop from a checkpoint.
 
         :param path:
             Path of the file where to load the state from.
+        :param triples_factory:
+            The triples factory being used in the current training loop. This is being used to check whether the
+            entity and relation to id mappings from the checkpoint match those provided by the current triples
+            factory.
 
         :return:
             Temporary file path of the best epoch model and the best epoch when using early stoppers, None otherwise.
@@ -1116,10 +1178,36 @@ class TrainingLoop(ABC):
                 pickle_protocol=pickle.HIGHEST_PROTOCOL,
             )
 
+        # Check whether the triples factory mappings match those from the checkpoints
+        relation_to_id_dict = checkpoint.get('relation_to_id_dict')
+        entity_to_id_dict = checkpoint.get('entity_to_id_dict')
+        if (
+            relation_to_id_dict is not None
+            and entity_to_id_dict is not None
+            and triples_factory is not None
+            and isinstance(triples_factory, TriplesFactory)
+        ):
+            if relation_to_id_dict != triples_factory.relation_to_id:
+                logger.warning(
+                    'The model provided by the checkpoint was trained on different relation_to_id mappings than the '
+                    'ones provided by the current triples factory. This will most likely render the current learning '
+                    'state of your model useless. This is usually caused by using a completely different dataset '
+                    'or sampling a sub-dataset from a bigger dataset before handing it to the PyKEEN triples factory.',
+                )
+            if entity_to_id_dict != triples_factory.entity_to_id:
+                logger.warning(
+                    'The model provided by the checkpoint was trained on different entity_to_id mappings than the '
+                    'ones provided by the current triples factory. This will most likely render the current learning '
+                    'state of your model useless. This is usually caused by using a completely different dataset '
+                    'or sampling a sub-dataset from a bigger dataset before handing it to the PyKEEN triples factory.',
+                )
+
         self._epoch = checkpoint['epoch']
         self.losses_per_epochs = checkpoint['loss']
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.load_state_dict(checkpoint['lr_scheduler_state_dict'])
         random.setstate(checkpoint['random_state'])
         np.random.set_state(checkpoint['np_random_state'])
         torch.random.set_rng_state(checkpoint['torch_random_state'])
