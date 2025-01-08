@@ -1,38 +1,81 @@
-# -*- coding: utf-8 -*-
-
 """Base classes for multi-modal models."""
 
-from typing import Sequence, Union
+from typing import ClassVar
 
-from ..nbase import ERModel, EmbeddingSpecificationHint
-from ...nn.emb import EmbeddingSpecification, LiteralRepresentation, RepresentationModule
-from ...nn.modules import LiteralInteraction
+from class_resolver import HintOrType, OneOrManyHintOrType, OneOrManyOptionalKwargs, OptionalKwargs
+
+from ..nbase import ERModel
+from ...nn.combination import Combination
+from ...nn.init import PretrainedInitializer
+from ...nn.modules import Interaction
+from ...nn.representation import CombinedRepresentation, Embedding, Representation
 from ...triples import TriplesNumericLiteralsFactory
-from ...typing import HeadRepresentation, RelationRepresentation, TailRepresentation
+from ...typing import FloatTensor
+from ...utils import upgrade_to_sequence
 
 __all__ = [
-    'LiteralModel',
+    "LiteralModel",
 ]
 
 
-class LiteralModel(ERModel[HeadRepresentation, RelationRepresentation, TailRepresentation], autoreset=False):
+class LiteralModel(
+    ERModel[tuple[FloatTensor, FloatTensor], FloatTensor, tuple[FloatTensor, FloatTensor]],
+    autoreset=False,
+):
     """Base class for models with entity literals that uses combinations from :class:`pykeen.nn.combinations`."""
+
+    #: the interaction class (for generating the overview table)
+    interaction_cls: ClassVar[type[Interaction]]
 
     def __init__(
         self,
         triples_factory: TriplesNumericLiteralsFactory,
-        interaction: LiteralInteraction,
-        entity_representations: Sequence[Union[EmbeddingSpecification, RepresentationModule]],
-        relation_representations: EmbeddingSpecificationHint = None,
+        interaction: HintOrType[Interaction[FloatTensor, FloatTensor, FloatTensor]],
+        entity_representations: OneOrManyHintOrType[Representation] = None,
+        entity_representations_kwargs: OneOrManyOptionalKwargs = None,
+        combination: HintOrType[Combination] = None,
+        combination_kwargs: OptionalKwargs = None,
         **kwargs,
     ):
-        literal_representation = LiteralRepresentation(
-            numeric_literals=triples_factory.get_numeric_literals_tensor(),
+        """
+        Initialize the model.
+
+        :param triples_factory:
+            the (training) triples factory
+        :param interaction:
+            the interaction function
+        :param entity_representations:
+            the entity representations (excluding the ones from literals)
+        :param entity_representations_kwargs:
+            the entity representations keyword-based parameters (excluding the ones from literals)
+        :param combination:
+            the combination for entity and literal representations
+        :param combination_kwargs:
+            keyword-based parameters for instantiating the combination
+        :param kwargs:
+            additional keyword-based parameters passed to :meth:`ERModel.__init__`
+        """
+        literals = triples_factory.get_numeric_literals_tensor()
+        _max_id, *shape = literals.shape
+        entity_representations = tuple(upgrade_to_sequence(entity_representations)) + (Embedding,)
+        entity_representations_kwargs = tuple(upgrade_to_sequence(entity_representations_kwargs)) + (
+            dict(
+                shape=shape,
+                initializer=PretrainedInitializer(tensor=literals),
+                trainable=False,
+            ),
         )
         super().__init__(
             triples_factory=triples_factory,
             interaction=interaction,
-            entity_representations=[*entity_representations, literal_representation],
-            relation_representations=relation_representations,
+            entity_representations=CombinedRepresentation,
+            entity_representations_kwargs=dict(
+                # added by ERModel
+                # max_id=triples_factory.num_entities,
+                base=entity_representations,
+                base_kwargs=entity_representations_kwargs,
+                combination=combination,
+                combination_kwargs=combination_kwargs,
+            ),
             **kwargs,
         )

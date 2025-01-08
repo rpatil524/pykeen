@@ -1,116 +1,164 @@
-# -*- coding: utf-8 -*-
-
 """Training KGE models based on the LCWA."""
 
 import logging
 from math import ceil
-from typing import Optional, Tuple
+from typing import Callable, ClassVar, Optional, Union
 
-import torch
+from torch.nn import functional
+from torch.utils.data import DataLoader, Dataset, TensorDataset
+from torch_max_mem.api import is_oom_error
 
 from .training_loop import TrainingLoop
-from .utils import apply_label_smoothing
-from ..triples import CoreTriplesFactory, Instances
-from ..typing import MappedTriples
+from ..losses import Loss
+from ..models import Model
+from ..triples import CoreTriplesFactory, LCWAInstances
+from ..triples.instances import LCWABatchType, LCWASampleType
+from ..typing import FloatTensor, InductiveMode, MappedTriples
 
 __all__ = [
-    'LCWATrainingLoop',
+    "LCWATrainingLoop",
+    "SymmetricLCWATrainingLoop",
 ]
 
 logger = logging.getLogger(__name__)
 
+name_to_index = {name: index for index, name in enumerate("hrt")}
 
-class LCWATrainingLoop(TrainingLoop):
-    """A training loop that uses the local closed world assumption training approach."""
 
-    def _create_instances(self, triples_factory: CoreTriplesFactory) -> Instances:  # noqa: D102
-        return triples_factory.create_lcwa_instances()
+class LCWATrainingLoop(TrainingLoop[LCWASampleType, LCWABatchType]):
+    r"""A training loop that is based upon the local closed world assumption (LCWA).
+
+    Under the LCWA, for a given true training triple $(h, r, t) \in \mathcal{T}_{train}$, all triples
+    $(h, r, t') \notin \mathcal{T}_{train}$ are assumed to be false. The training approach thus uses a 1-n scoring,
+    where it efficiently computes scores for all triples $(h, r, t')$ for $t' \in \mathcal{E}$, i.e., sharing the
+    same (head, relation)-pair.
+
+    This implementation slightly generalizes the original LCWA, and allows to make the same assumption for relation, or
+    head entity. In particular the second, i.e., predicting the relation, is commonly encountered in visual relation
+    prediction.
+
+    [ruffinelli2020]_ call the LCWA ``KvsAll`` in their work.
+    """
+
+    supports_slicing: ClassVar[bool] = True
+
+    def __init__(
+        self,
+        *,
+        target: Union[None, str, int] = None,
+        **kwargs,
+    ):
+        """
+        Initialize the training loop.
+
+        :param target:
+            The target column. From {0, 1, 2} for head/relation/tail prediction. Defaults to 2, i.e., tail prediction.
+        :param kwargs:
+            Additional keyword-based parameters passed to TrainingLoop.__init__
+        :raises ValueError:
+            If an invalid target column is given
+        """
+        super().__init__(**kwargs)
+
+        # normalize target column
+        if target is None:
+            target = 2
+        if isinstance(target, str):
+            target = name_to_index[target]
+        self.target = target
+
+        # The type inference is so confusing between the function switching
+        # and polymorphism introduced by slicability that these need to be ignored
+        if self.target == 0:
+            self.score_method = self.model.score_h  # type: ignore
+        elif self.target == 1:
+            self.score_method = self.model.score_r  # type: ignore
+        elif self.target == 2:
+            self.score_method = self.model.score_t  # type: ignore
+        else:
+            raise ValueError(f"Invalid target column: {self.target}. Must be from {{0, 1, 2}}.")
+
+        # Explicit mentioning of num_transductive_entities since in the evaluation there will be a different number
+        # of total entities from another inductive inference factory
+        self.num_targets = self.model.num_relations if self.target == 1 else self.model._get_entity_len(mode=self.mode)
+
+    # docstr-coverage: inherited
+    def _create_training_data_loader(
+        self, triples_factory: CoreTriplesFactory, sampler: Optional[str], **kwargs
+    ) -> DataLoader[LCWABatchType]:  # noqa: D102
+        if sampler:
+            raise NotImplementedError(
+                f"LCWA training does not support non-default batch sampling. Expected sampler=None, but got "
+                f"sampler='{sampler}'.",
+            )
+
+        dataset = create_lcwa_instances(triples_factory, target=self.target)
+        return DataLoader(dataset=dataset, collate_fn=dataset.get_collator(), **kwargs)
 
     @staticmethod
-    def _get_batch_size(batch: Tuple[MappedTriples, torch.FloatTensor]) -> int:  # noqa: D102
+    # docstr-coverage: inherited
+    def _get_batch_size(batch: LCWABatchType) -> int:  # noqa: D102
         return batch[0].shape[0]
 
-    def _process_batch(
-        self,
-        batch: Tuple[MappedTriples, torch.FloatTensor],
-        start: int,
-        stop: int,
+    @staticmethod
+    def _process_batch_static(
+        model: Model,
+        score_method: Callable,
+        loss: Loss,
+        num_targets: Optional[int],
+        mode: Optional[InductiveMode],
+        batch: LCWABatchType,
+        start: Optional[int],
+        stop: Optional[int],
         label_smoothing: float = 0.0,
         slice_size: Optional[int] = None,
-    ) -> torch.FloatTensor:  # noqa: D102
+    ) -> FloatTensor:
         # Split batch components
         batch_pairs, batch_labels_full = batch
 
         # Send batch to device
-        batch_pairs = batch_pairs[start:stop].to(device=self.device)
-        batch_labels_full = batch_labels_full[start:stop].to(device=self.device)
+        batch_pairs = batch_pairs[start:stop].to(device=model.device)
+        batch_labels_full = batch_labels_full[start:stop].to(device=model.device)
 
-        if slice_size is None:
-            predictions = self.model.score_t(hr_batch=batch_pairs)
-        else:
-            predictions = self.model.score_t(hr_batch=batch_pairs, slice_size=slice_size)  # type: ignore
+        predictions = score_method(batch_pairs, slice_size=slice_size, mode=mode)
 
-        loss = self._loss_helper(
-            predictions,
-            batch_labels_full,
-            label_smoothing,
-        )
-        return loss
-
-    def _label_loss_helper(
-        self,
-        predictions: torch.FloatTensor,
-        labels: torch.FloatTensor,
-        label_smoothing: float,
-    ) -> torch.FloatTensor:
-        # Apply label smoothing
-        if label_smoothing > 0.:
-            labels = apply_label_smoothing(
-                labels=labels,
-                epsilon=label_smoothing,
-                num_classes=self.model.num_entities,
+        return (
+            loss.process_lcwa_scores(
+                predictions=predictions,
+                labels=batch_labels_full,
+                label_smoothing=label_smoothing,
+                num_entities=num_targets,
             )
+            + model.collect_regularization_term()
+        )
 
-        return self.model.compute_loss(predictions, labels)
-
-    def _mr_loss_helper(
+    # docstr-coverage: inherited
+    def _process_batch(
         self,
-        predictions: torch.FloatTensor,
-        labels: torch.FloatTensor,
-        _label_smoothing=None,
-    ) -> torch.FloatTensor:
-        # This shows how often one row has to be repeated
-        repeat_rows = (labels == 1).nonzero(as_tuple=False)[:, 0]
-        # Create boolean indices for negative labels in the repeated rows
-        labels_negative = labels[repeat_rows] == 0
-        # Repeat the predictions and filter for negative labels
-        negative_scores = predictions[repeat_rows][labels_negative]
+        batch: LCWABatchType,
+        start: int,
+        stop: int,
+        label_smoothing: float = 0.0,
+        slice_size: Optional[int] = None,
+    ) -> FloatTensor:  # noqa: D102
+        return self._process_batch_static(
+            model=self.model,
+            score_method=self.score_method,
+            loss=self.loss,
+            num_targets=self.num_targets,
+            mode=self.mode,
+            batch=batch,
+            start=start,
+            stop=stop,
+            label_smoothing=label_smoothing,
+            slice_size=slice_size,
+        )
 
-        # This tells us how often each true label should be repeated
-        repeat_true_labels = (labels[repeat_rows] == 0).nonzero(as_tuple=False)[:, 0]
-        # First filter the predictions for true labels and then repeat them based on the repeat vector
-        positive_scores = predictions[labels == 1][repeat_true_labels]
-
-        return self.model.compute_loss(positive_scores, negative_scores)
-
-    def _self_adversarial_negative_sampling_loss_helper(
-        self,
-        predictions: torch.FloatTensor,
-        labels: torch.FloatTensor,
-        _label_smoothing=None,
-    ) -> torch.FloatTensor:
-        """Compute self adversarial negative sampling loss."""
-        # Split positive and negative scores
-        positive_scores = predictions[labels == 1]
-        negative_scores = predictions[labels == 0]
-
-        return self.model.compute_loss(positive_scores, negative_scores)
-
+    # docstr-coverage: inherited
     def _slice_size_search(
         self,
         *,
         triples_factory: CoreTriplesFactory,
-        training_instances: Instances,
         batch_size: int,
         sub_batch_size: int,
         supports_sub_batching: bool,
@@ -124,39 +172,35 @@ class LCWATrainingLoop(TrainingLoop):
         slice_size = ceil(self.model.num_entities / 2)
         while True:
             try:
-                logger.debug(f'Trying slice size {slice_size} now.')
+                logger.debug(f"Trying {slice_size=:_} now.")
                 self._train(
                     triples_factory=triples_factory,
-                    training_instances=training_instances,
                     num_epochs=1,
                     batch_size=batch_size,
                     sub_batch_size=sub_batch_size,
                     slice_size=slice_size,
                     only_size_probing=True,
                 )
-            except RuntimeError as e:
+            except RuntimeError as runtime_error:
                 self._free_graph_and_cache()
-                if 'CUDA out of memory.' not in e.args[0]:
-                    raise e
+                if not is_oom_error(runtime_error):
+                    raise runtime_error
                 if evaluated_once:
                     slice_size //= 2
-                    logger.info(f'Concluded search with slice_size {slice_size}.')
+                    logger.info(f"Concluded search with {slice_size=:_}.")
                     break
                 if slice_size == 1:
                     raise MemoryError(
-                        f"Even slice_size={slice_size} doesn't fit into your memory with these"
-                        f" parameters.",
-                    ) from e
+                        f"Even {slice_size=:_} doesn't fit into your memory with these parameters."
+                    ) from runtime_error
 
-                logger.debug(
-                    f'The slice_size {slice_size} was too big, trying less now.',
-                )
+                logger.debug(f"The {slice_size=:_} was too big, trying less now.")
                 slice_size //= 2
                 reached_max = True
             else:
                 self._free_graph_and_cache()
                 if reached_max:
-                    logger.info(f'Concluded search with slice_size {slice_size}.')
+                    logger.info(f"Concluded search with {slice_size=:_}.")
                     break
                 slice_size *= 2
                 evaluated_once = True
@@ -164,7 +208,11 @@ class LCWATrainingLoop(TrainingLoop):
         return slice_size
 
     def _check_slicing_availability(self, supports_sub_batching: bool):
-        if self.model.can_slice_t:
+        if self.target == 0:
+            return
+        if self.target == 1:
+            return
+        if self.target == 2:
             return
         elif supports_sub_batching:
             report = (
@@ -172,9 +220,93 @@ class LCWATrainingLoop(TrainingLoop):
                 " which is not implemented for this model yet."
             )
         else:
-            report = (
-                "This model doesn't support sub-batching and slicing is not"
-                " implemented for this model yet."
-            )
+            report = "This model doesn't support sub-batching and slicing is not" " implemented for this model yet."
         logger.warning(report)
         raise MemoryError("The current model can't be trained on this hardware with these parameters.")
+
+
+# note: we use Tuple[Tensor] here, so we can re-use TensorDataset instead of having to create a custom one
+class SymmetricLCWATrainingLoop(TrainingLoop[tuple[MappedTriples], tuple[MappedTriples]]):
+    r"""A "symmetric" LCWA scoring heads *and* tails at once.
+
+    This objective was introduced by [lacroix2018]_ as
+
+    .. math ::
+
+        l_{i,j,k}(X) = - X_{i,j,k} + \log \left(
+            \sum_{k'} \exp(X_{i,j,k′})
+        \right) - X_{k,j+P,i} + \log \left(
+            \sum_{i'} \exp (X_{k, j+P, i'})
+        \right)
+
+
+    which can be seen as a "symmetric LCWA", where for one batch of triples, we score both, heads *and* tails, given
+    the remainder of the triple.
+
+    .. note ::
+        at the same time, there is a also a difference to the :class:`LCWATrainingLoop`: we do not group by e.g.,
+        head+relation pairs. Thus, the name might be suboptimal and change in the future.
+    """
+
+    # docstr-coverage: inherited
+    def _create_training_data_loader(
+        self, triples_factory: CoreTriplesFactory, sampler: Optional[str], **kwargs
+    ) -> DataLoader[tuple[MappedTriples]]:  # noqa: D102
+        assert sampler is None
+        return DataLoader(dataset=TensorDataset(triples_factory.mapped_triples), **kwargs)
+
+    # docstr-coverage: inherited
+    def _process_batch(
+        self,
+        batch: tuple[MappedTriples],
+        start: int,
+        stop: int,
+        label_smoothing: float = 0,
+        slice_size: Optional[int] = None,
+    ) -> FloatTensor:  # noqa: D102
+        # unpack
+        hrt_batch = batch[0]
+        # Send batch to device
+        hrt_batch = hrt_batch[start:stop].to(device=self.model.device)
+        return (
+            # head prediction
+            self.loss.process_lcwa_scores(
+                predictions=self.model.score_h(rt_batch=hrt_batch[:, 1:], slice_size=slice_size, mode=self.mode),
+                # TODO: exploit sparsity
+                # note: this is different to what we do for LCWA, where we collect *all* training entities
+                #   for which the combination is true
+                labels=functional.one_hot(hrt_batch[:, 0], num_classes=self.model.num_entities).float(),
+                label_smoothing=label_smoothing,
+                num_entities=self.model.num_entities,
+            )
+            # tail prediction
+            + self.loss.process_lcwa_scores(
+                predictions=self.model.score_t(hr_batch=hrt_batch[:, :-1], slice_size=slice_size, mode=self.mode),
+                # TODO: exploit sparsity
+                labels=functional.one_hot(hrt_batch[:, 2], num_classes=self.model.num_entities).float(),
+                label_smoothing=label_smoothing,
+                num_entities=self.model.num_entities,
+            )
+            # regularization
+            + self.model.collect_regularization_term()
+        )
+
+    @staticmethod
+    # docstr-coverage: inherited
+    def _get_batch_size(batch: tuple[MappedTriples]) -> int:  # noqa: D102
+        assert len(batch) == 1
+        return batch[0].shape[0]
+
+    def _slice_size_search(self, **kwargs) -> int:
+        # TODO?
+        raise MemoryError("The current model can't be trained on this hardware with these parameters.")
+
+
+def create_lcwa_instances(tf: CoreTriplesFactory, target: Optional[int] = None) -> Dataset:
+    """Create LCWA instances for this factory's triples."""
+    return LCWAInstances.from_triples(
+        mapped_triples=tf._add_inverse_triples_if_necessary(mapped_triples=tf.mapped_triples),
+        num_entities=tf.num_entities,
+        num_relations=tf.num_relations,
+        target=target,
+    )

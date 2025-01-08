@@ -1,4 +1,5 @@
 Combinations
 ============
-.. automodapi:: pykeen.nn.combinations
+.. automodapi:: pykeen.nn.combination
     :no-heading:
+    :include-all-objects:

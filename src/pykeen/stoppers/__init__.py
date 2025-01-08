@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 """Early stoppers.
 
 The following code will create a scenario in which training will stop
@@ -26,26 +24,21 @@ The following code will create a scenario in which training will stop
 ... )
 """
 
-from typing import Collection, Type
-
-from class_resolver import Resolver, get_subclasses
+from class_resolver import ClassResolver
 
 from .early_stopping import EarlyStopper, StopperCallback  # noqa: F401
 from .stopper import NopStopper, Stopper
 
 __all__ = [
-    'Stopper',
-    'NopStopper',
-    'EarlyStopper',
+    "Stopper",
+    "NopStopper",
+    "EarlyStopper",
     # Utils
-    'stopper_resolver',
+    "stopper_resolver",
 ]
 
-_STOPPER_SUFFIX = 'Stopper'
-_STOPPERS: Collection[Type[Stopper]] = set(get_subclasses(Stopper))  # type: ignore
-stopper_resolver = Resolver(
-    _STOPPERS,
+#: A resolver for stoppers
+stopper_resolver: ClassResolver[Stopper] = ClassResolver.from_subclasses(
+    Stopper,
     default=NopStopper,
-    suffix=_STOPPER_SUFFIX,
-    base=Stopper,  # type: ignore
 )

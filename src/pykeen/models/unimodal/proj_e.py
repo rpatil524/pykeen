@@ -1,47 +1,29 @@
-# -*- coding: utf-8 -*-
-
 """Implementation of ProjE."""
 
-from typing import Any, ClassVar, Mapping, Optional, Type
+from collections.abc import Mapping
+from typing import Any, ClassVar
 
-import numpy
-import torch
-import torch.autograd
+from class_resolver import HintOrType, OptionalKwargs, ResolverKey, update_docstring_with_resolver_keys
 from torch import nn
 
-from ..base import EntityRelationEmbeddingModel
+from ..nbase import ERModel
 from ...constants import DEFAULT_EMBEDDING_HPO_EMBEDDING_DIM_RANGE
 from ...losses import BCEWithLogitsLoss, Loss
-from ...nn.emb import EmbeddingSpecification
 from ...nn.init import xavier_uniform_
-from ...regularizers import Regularizer
-from ...triples import CoreTriplesFactory
-from ...typing import DeviceHint, Hint, Initializer
+from ...nn.modules import ProjEInteraction
+from ...typing import FloatTensor, Hint, Initializer
 
 __all__ = [
-    'ProjE',
+    "ProjE",
 ]
 
 
-class ProjE(EntityRelationEmbeddingModel):
+class ProjE(ERModel[FloatTensor, FloatTensor, FloatTensor]):
     r"""An implementation of ProjE from [shi2017]_.
 
-    ProjE is a neural network-based approach with a *combination* and a *projection* layer. The interaction model
-    first combines $h$ and $r$ by following combination operator:
-
-    .. math::
-
-        \textbf{h} \otimes \textbf{r} = \textbf{D}_e \textbf{h} + \textbf{D}_r \textbf{r} + \textbf{b}_c
-
-    where $\textbf{D}_e, \textbf{D}_r \in \mathbb{R}^{k \times k}$ are diagonal matrices which are used as shared
-    parameters among all entities and relations, and $\textbf{b}_c \in \mathbb{R}^{k}$ represents the candidate bias
-    vector shared across all entities. Next, the score for the triple $(h,r,t) \in \mathbb{K}$ is computed:
-
-    .. math::
-
-        f(h, r, t) = g(\textbf{t} \ z(\textbf{h} \otimes \textbf{r}) + \textbf{b}_p)
-
-    where $g$ and $z$ are activation functions, and $\textbf{b}_p$ represents the shared projection bias vector.
+    ProjE represents entities and relations using a $d$-dimensional embedding vector stored in an
+    :class:`~pykeen.nn.representation.Embedding`. On top of these representations, this model uses the
+    :class:`~pykeen.nn.modules.ProjEInteraction` to calculate scores.
 
     .. seealso::
 
@@ -59,97 +41,53 @@ class ProjE(EntityRelationEmbeddingModel):
         embedding_dim=DEFAULT_EMBEDDING_HPO_EMBEDDING_DIM_RANGE,
     )
     #: The default loss function class
-    loss_default: ClassVar[Type[Loss]] = BCEWithLogitsLoss
+    loss_default: ClassVar[type[Loss]] = BCEWithLogitsLoss
     #: The default parameters for the default loss function class
-    loss_default_kwargs = dict(reduction='mean')
+    loss_default_kwargs = dict(reduction="mean")
 
+    @update_docstring_with_resolver_keys(
+        ResolverKey(name="inner_non_linearity", resolver="class_resolver.contrib.torch.activation_resolver")
+    )
     def __init__(
         self,
-        triples_factory: CoreTriplesFactory,
+        *,
         embedding_dim: int = 50,
-        loss: Optional[Loss] = None,
-        preferred_device: DeviceHint = None,
-        random_seed: Optional[int] = None,
-        inner_non_linearity: Optional[nn.Module] = None,
-        regularizer: Optional[Regularizer] = None,
+        inner_non_linearity: HintOrType[nn.Module] = None,
+        inner_non_linearity_kwargs: OptionalKwargs = None,
         entity_initializer: Hint[Initializer] = xavier_uniform_,
         relation_initializer: Hint[Initializer] = xavier_uniform_,
+        **kwargs,
     ) -> None:
+        """
+        Initialize the model.
+
+        :param embedding_dim:
+            the embedding dimension
+        :param inner_non_linearity:
+            the inner non-linearity, of a hint thereof. cf. :class:`pykeen.nn.modules.ProjEInteraction`
+        :param inner_non_linearity_kwargs:
+            additional keyword-based parameters used to instantiate the non-linearity.
+        :param entity_initializer:
+            the entity representation initializer, defaults to :func:`~pykeen.nn.init.xavier_uniform_`.
+        :param relation_initializer:
+            the relation representation initializer, defaults to :func:`~pykeen.nn.init.xavier_uniform_`.
+        :param kwargs:
+            additional keyword-based parameters passed to :class:`~pykeen.models.ERModel`
+        """
         super().__init__(
-            triples_factory=triples_factory,
-            loss=loss,
-            preferred_device=preferred_device,
-            random_seed=random_seed,
-            regularizer=regularizer,
-            entity_representations=EmbeddingSpecification(
+            interaction=ProjEInteraction,
+            interaction_kwargs=dict(
                 embedding_dim=embedding_dim,
+                inner_activation=inner_non_linearity,
+                inner_activation_kwargs=inner_non_linearity_kwargs,
+            ),
+            entity_representations_kwargs=dict(
+                shape=embedding_dim,
                 initializer=entity_initializer,
             ),
-            relation_representations=EmbeddingSpecification(
-                embedding_dim=embedding_dim,
+            relation_representations_kwargs=dict(
+                shape=embedding_dim,
                 initializer=relation_initializer,
             ),
+            **kwargs,
         )
-
-        # Global entity projection
-        self.d_e = nn.Parameter(torch.empty(self.embedding_dim, device=self.device), requires_grad=True)
-
-        # Global relation projection
-        self.d_r = nn.Parameter(torch.empty(self.embedding_dim, device=self.device), requires_grad=True)
-
-        # Global combination bias
-        self.b_c = nn.Parameter(torch.empty(self.embedding_dim, device=self.device), requires_grad=True)
-
-        # Global combination bias
-        self.b_p = nn.Parameter(torch.empty(1, device=self.device), requires_grad=True)
-
-        if inner_non_linearity is None:
-            inner_non_linearity = nn.Tanh()
-        self.inner_non_linearity = inner_non_linearity
-
-    def _reset_parameters_(self):  # noqa: D102
-        super()._reset_parameters_()
-        bound = numpy.sqrt(6) / self.embedding_dim
-        nn.init.uniform_(self.d_e, a=-bound, b=bound)
-        nn.init.uniform_(self.d_r, a=-bound, b=bound)
-        nn.init.uniform_(self.b_c, a=-bound, b=bound)
-        nn.init.uniform_(self.b_p, a=-bound, b=bound)
-
-    def score_hrt(self, hrt_batch: torch.LongTensor) -> torch.FloatTensor:  # noqa: D102
-        # Get embeddings
-        h = self.entity_embeddings(indices=hrt_batch[:, 0])
-        r = self.relation_embeddings(indices=hrt_batch[:, 1])
-        t = self.entity_embeddings(indices=hrt_batch[:, 2])
-
-        # Compute score
-        hidden = self.inner_non_linearity(self.d_e[None, :] * h + self.d_r[None, :] * r + self.b_c[None, :])
-        scores = torch.sum(hidden * t, dim=-1, keepdim=True) + self.b_p
-
-        return scores
-
-    def score_t(self, hr_batch: torch.LongTensor) -> torch.FloatTensor:  # noqa: D102
-        # Get embeddings
-        h = self.entity_embeddings(indices=hr_batch[:, 0])
-        r = self.relation_embeddings(indices=hr_batch[:, 1])
-        t = self.entity_embeddings(indices=None)
-
-        # Rank against all entities
-        hidden = self.inner_non_linearity(self.d_e[None, :] * h + self.d_r[None, :] * r + self.b_c[None, :])
-        scores = torch.sum(hidden[:, None, :] * t[None, :, :], dim=-1) + self.b_p
-
-        return scores
-
-    def score_h(self, rt_batch: torch.LongTensor) -> torch.FloatTensor:  # noqa: D102
-        # Get embeddings
-        h = self.entity_embeddings(indices=None)
-        r = self.relation_embeddings(indices=rt_batch[:, 0])
-        t = self.entity_embeddings(indices=rt_batch[:, 1])
-
-        # Rank against all entities
-        hidden = self.inner_non_linearity(
-            self.d_e[None, None, :] * h[None, :, :]
-            + (self.d_r[None, None, :] * r[:, None, :] + self.b_c[None, None, :]),
-        )
-        scores = torch.sum(hidden * t[:, None, :], dim=-1) + self.b_p
-
-        return scores

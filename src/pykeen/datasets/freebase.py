@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 """Freebase datasets.
 
 * FB15k
@@ -15,8 +13,8 @@ from more_click import verbose_option
 from .base import PackedZipRemoteDataset, TarFileRemoteDataset
 
 __all__ = [
-    'FB15k',
-    'FB15k237',
+    "FB15k",
+    "FB15k237",
 ]
 
 
@@ -39,20 +37,18 @@ class FB15k(TarFileRemoteDataset):
         link: http://papers.nips.cc/paper/5071-translating-embeddings-for-modeling-multi-relational-data.pdf
     """
 
-    def __init__(self, create_inverse_triples: bool = False, **kwargs):
+    def __init__(self, **kwargs):
         """Initialize the FreeBase 15K dataset.
 
-        :param create_inverse_triples: Should inverse triples be created? Defaults to false.
         :param kwargs: keyword arguments passed to :class:`pykeen.datasets.base.TarFileRemoteDataset`.
 
         .. warning:: This dataset contains testing leakage. Use :class:`FB15k237` instead.
         """
         super().__init__(
-            url='https://everest.hds.utc.fr/lib/exe/fetch.php?media=en:fb15k.tgz',
-            relative_training_path=os.path.join('FB15k', 'freebase_mtr100_mte100-train.txt'),
-            relative_testing_path=os.path.join('FB15k', 'freebase_mtr100_mte100-test.txt'),
-            relative_validation_path=os.path.join('FB15k', 'freebase_mtr100_mte100-valid.txt'),
-            create_inverse_triples=create_inverse_triples,
+            url="https://everest.hds.utc.fr/lib/exe/fetch.php?media=en:fb15k.tgz",
+            relative_training_path=os.path.join("FB15k", "freebase_mtr100_mte100-train.txt"),
+            relative_testing_path=os.path.join("FB15k", "freebase_mtr100_mte100-test.txt"),
+            relative_validation_path=os.path.join("FB15k", "freebase_mtr100_mte100-valid.txt"),
             **kwargs,
         )
 
@@ -76,18 +72,16 @@ class FB15k237(PackedZipRemoteDataset):
         link: https://www.aclweb.org/anthology/W15-4007/
     """
 
-    def __init__(self, create_inverse_triples: bool = False, **kwargs):
+    def __init__(self, **kwargs):
         """Initialize the FreeBase 15K (237) dataset.
 
-        :param create_inverse_triples: Should inverse triples be created? Defaults to false.
         :param kwargs: keyword arguments passed to :class:`pykeen.datasets.base.ZipFileRemoteDataset`.
         """
         super().__init__(
-            url='https://download.microsoft.com/download/8/7/0/8700516A-AB3D-4850-B4BB-805C515AECE1/FB15K-237.2.zip',
-            relative_training_path=os.path.join('Release', 'train.txt'),
-            relative_testing_path=os.path.join('Release', 'test.txt'),
-            relative_validation_path=os.path.join('Release', 'valid.txt'),
-            create_inverse_triples=create_inverse_triples,
+            url="https://download.microsoft.com/download/8/7/0/8700516A-AB3D-4850-B4BB-805C515AECE1/FB15K-237.2.zip",
+            relative_training_path=os.path.join("Release", "train.txt"),
+            relative_testing_path=os.path.join("Release", "test.txt"),
+            relative_validation_path=os.path.join("Release", "valid.txt"),
             **kwargs,
         )
 
@@ -99,5 +93,5 @@ def _main():
         cls().summarize()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     _main()

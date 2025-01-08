@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 """Tests for the :mod:`pykeen.utils` module."""
 
 import functools
@@ -9,16 +7,31 @@ import random
 import string
 import timeit
 import unittest
-from typing import Iterable, Tuple
+from collections.abc import Iterable
 
 import numpy
 import pytest
 import torch
 
 from pykeen.utils import (
-    broadcast_cat, calculate_broadcasted_elementwise_result_shape, clamp_norm, combine_complex, compact_mapping,
-    compose, estimate_cost_of_sequence, flatten_dictionary, get_optimal_sequence, get_until_first_blank,
-    project_entity, set_random_seed, split_complex, tensor_product, tensor_sum, torch_is_in_1d,
+    _weisfeiler_lehman_iteration,
+    _weisfeiler_lehman_iteration_approx,
+    calculate_broadcasted_elementwise_result_shape,
+    clamp_norm,
+    combine_complex,
+    compact_mapping,
+    compose,
+    estimate_cost_of_sequence,
+    flatten_dictionary,
+    get_optimal_sequence,
+    get_until_first_blank,
+    iter_weisfeiler_lehman,
+    logcumsumexp,
+    project_entity,
+    set_random_seed,
+    split_complex,
+    tensor_product,
+    tensor_sum,
 )
 
 
@@ -34,11 +47,11 @@ class TestCompose(unittest.TestCase):
         def _g(x):
             return 2 * x
 
-        fog = compose(_f, _g)
+        fog = compose(_f, _g, name="fog")
         for i in range(5):
             with self.subTest(i=i):
                 self.assertEqual(_g(_f(i)), fog(i))
-                self.assertEqual(_g(_f(i ** 2)), fog(i ** 2))
+                self.assertEqual(_g(_f(i**2)), fog(i**2))
 
 
 class FlattenDictionaryTest(unittest.TestCase):
@@ -47,18 +60,18 @@ class FlattenDictionaryTest(unittest.TestCase):
     def test_flatten_dictionary(self):
         """Test if the output of flatten_dictionary is correct."""
         nested_dictionary = {
-            'a': {
-                'b': {
-                    'c': 1,
-                    'd': 2,
+            "a": {
+                "b": {
+                    "c": 1,
+                    "d": 2,
                 },
-                'e': 3,
+                "e": 3,
             },
         }
         expected_output = {
-            'a.b.c': 1,
-            'a.b.d': 2,
-            'a.e': 3,
+            "a.b.c": 1,
+            "a.b.d": 2,
+            "a.e": 3,
         }
         observed_output = flatten_dictionary(nested_dictionary)
         self._compare(observed_output, expected_output)
@@ -66,18 +79,18 @@ class FlattenDictionaryTest(unittest.TestCase):
     def test_flatten_dictionary_mixed_key_type(self):
         """Test if the output of flatten_dictionary is correct if some keys are not strings."""
         nested_dictionary = {
-            'a': {
+            "a": {
                 5: {
-                    'c': 1,
-                    'd': 2,
+                    "c": 1,
+                    "d": 2,
                 },
-                'e': 3,
+                "e": 3,
             },
         }
         expected_output = {
-            'a.5.c': 1,
-            'a.5.d': 2,
-            'a.e': 3,
+            "a.5.c": 1,
+            "a.5.d": 2,
+            "a.e": 3,
         }
         observed_output = flatten_dictionary(nested_dictionary)
         self._compare(observed_output, expected_output)
@@ -85,20 +98,20 @@ class FlattenDictionaryTest(unittest.TestCase):
     def test_flatten_dictionary_prefix(self):
         """Test if the output of flatten_dictionary is correct."""
         nested_dictionary = {
-            'a': {
-                'b': {
-                    'c': 1,
-                    'd': 2,
+            "a": {
+                "b": {
+                    "c": 1,
+                    "d": 2,
                 },
-                'e': 3,
+                "e": 3,
             },
         }
         expected_output = {
-            'Test.a.b.c': 1,
-            'Test.a.b.d': 2,
-            'Test.a.e': 3,
+            "Test.a.b.c": 1,
+            "Test.a.b.d": 2,
+            "Test.a.e": 3,
         }
-        observed_output = flatten_dictionary(nested_dictionary, prefix='Test')
+        observed_output = flatten_dictionary(nested_dictionary, prefix="Test")
         self._compare(observed_output, expected_output)
 
     def _compare(self, observed_output, expected_output):
@@ -111,9 +124,9 @@ class TestGetUntilFirstBlank(unittest.TestCase):
 
     def test_get_until_first_blank_trivial(self):
         """Test the trivial string."""
-        s = ''
+        s = ""
         r = get_until_first_blank(s)
-        self.assertEqual('', r)
+        self.assertEqual("", r)
 
     def test_regular(self):
         """Test a regulat case."""
@@ -126,25 +139,13 @@ class TestGetUntilFirstBlank(unittest.TestCase):
         self.assertEqual("Broken line.", r)
 
 
-def _get_torch_is_in_1d_result_naive(
-    query_tensor: torch.LongTensor,
-    test_tensor: torch.LongTensor,
-    invert: bool = False,
-) -> torch.BoolTensor:
-    """Compute the result of torch_is_in_1d naively."""
-    mask = (test_tensor.view(-1, *(1 for _ in query_tensor.shape)) == query_tensor.unsqueeze(dim=0)).any(dim=0)
-    if invert:
-        mask = ~mask
-    return mask
-
-
 def _generate_shapes(
     n_dim: int = 5,
     n_terms: int = 4,
     iterations: int = 64,
     *,
     generator: torch.Generator,
-) -> Iterable[Tuple[Tuple[int, ...], ...]]:
+) -> Iterable[tuple[tuple[int, ...], ...]]:
     """Generate shapes."""
     max_shape = torch.randint(low=2, high=32, size=(128,), generator=generator)
     for _ in range(iterations):
@@ -167,10 +168,7 @@ class TestUtils(unittest.TestCase):
 
     def test_compact_mapping(self):
         """Test ``compact_mapping()``."""
-        mapping = {
-            letter: 2 * i
-            for i, letter in enumerate(string.ascii_letters)
-        }
+        mapping = {letter: 2 * i for i, letter in enumerate(string.ascii_letters)}
         compacted_mapping, id_remapping = compact_mapping(mapping=mapping)
 
         # check correct value range
@@ -183,7 +181,7 @@ class TestUtils(unittest.TestCase):
         max_norm = 1.0
         gen = torch.manual_seed(42)
         eps = 1.0e-06
-        for p in [1, 2, float('inf')]:
+        for p in [1, 2, float("inf")]:
             for _ in range(10):
                 x = torch.rand(10, 20, 30, generator=gen)
                 for dim in range(x.ndimension()):
@@ -196,29 +194,6 @@ class TestUtils(unittest.TestCase):
                     norm = x.norm(p=p, dim=dim)
                     mask = torch.stack([(norm < max_norm)] * x.shape[dim], dim=dim)
                     assert (x_c[mask] == x[mask]).all()
-
-    def test_torch_is_in_1d(self):
-        """Test torch_is_in_1d."""
-        max_id = 33
-        num_tests = 5
-        test_tensor = torch.randint(max_id, size=(num_tests,))
-        query_sizes = [(7,), (2, 3)]
-        for query_size in query_sizes:
-            # generate random query tensor
-            query_tensor = torch.randint(max_id, size=query_size)
-            for invert, provide_max_id, as_collection in itertools.product((False, True), repeat=3):
-                result = torch_is_in_1d(
-                    query_tensor=query_tensor,
-                    test_tensor=test_tensor.tolist() if as_collection else test_tensor,
-                    max_id=max_id if provide_max_id else None,
-                    invert=invert,
-                )
-                expected_result = _get_torch_is_in_1d_result_naive(
-                    query_tensor=query_tensor,
-                    test_tensor=test_tensor,
-                    invert=invert,
-                )
-                assert (result == expected_result).all()
 
     def test_complex_utils(self):
         """Test complex tensor utilities."""
@@ -270,8 +245,8 @@ class TestUtils(unittest.TestCase):
             a_shape = [1 for _ in range(n_dim)]
             b_shape = [1 for _ in range(n_dim)]
             for j in range(n_dim):
-                dim = 2 + random.randrange(max_dim)
-                mod = random.randrange(3)
+                dim = 2 + random.randrange(max_dim)  # noqa:S311
+                mod = random.randrange(3)  # noqa:S311
                 if mod % 2 == 0:
                     a_shape[j] = dim
                 if mod > 0:
@@ -283,7 +258,7 @@ class TestUtils(unittest.TestCase):
                 exp_shape = c.shape
                 assert shape == exp_shape
 
-    @unittest.skip('This is often failing non-deterministically')
+    @unittest.skip("This is often failing non-deterministically")
     def test_estimate_cost_of_add_sequence(self):
         """Test ``estimate_cost_of_add_sequence()``."""
         _, generator, _ = set_random_seed(seed=42)
@@ -293,7 +268,7 @@ class TestUtils(unittest.TestCase):
         for shapes in _generate_shapes(generator=generator):
             arrays = [torch.empty(*shape) for shape in shapes]
             cost = estimate_cost_of_sequence(*(a.shape for a in arrays))
-            n_samples, time = timeit.Timer(stmt='sum(arrays)', globals=dict(arrays=arrays)).autorange()
+            n_samples, time = timeit.Timer(stmt="sum(arrays)", globals=dict(arrays=arrays)).autorange()
             consumption = time / n_samples
             data.append((cost, consumption))
         a = numpy.asarray(data)
@@ -312,10 +287,13 @@ class TestUtils(unittest.TestCase):
             first_time = timeit.default_timer() - first_time
 
             # check caching
-            samples, second_time = timeit.Timer(stmt="get_optimal_sequence(*shapes)", globals=dict(
-                get_optimal_sequence=get_optimal_sequence,
-                shapes=shapes,
-            )).autorange()
+            samples, second_time = timeit.Timer(
+                stmt="get_optimal_sequence(*shapes)",
+                globals=dict(
+                    get_optimal_sequence=get_optimal_sequence,
+                    shapes=shapes,
+                ),
+            ).autorange()
             second_time /= samples
 
             assert second_time < first_time
@@ -356,16 +334,52 @@ class TestUtils(unittest.TestCase):
             # compare result to sequential addition
             assert torch.allclose(result, functools.reduce(operator.mul, tensors[1:], tensors[0]))
 
-    def test_broadcast_cat(self):
-        """Test broadcast_cat."""
-        generator = set_random_seed(seed=42)[1]
-        for shapes in _generate_shapes(generator=generator):
-            tensors = [torch.rand(*shape) for shape in shapes]
+    def test_logcumsumexp(self):
+        """Verify that our numpy implementation gives the same results as the torch variant."""
+        generator = numpy.random.default_rng(seed=42)
+        a = generator.random(size=(21,))
+        r1 = logcumsumexp(a)
+        r2 = torch.logcumsumexp(torch.as_tensor(a), dim=0).numpy()
+        numpy.testing.assert_allclose(r1, r2)
 
-            for dim in range(len(tensors[0].shape)):
-                result = broadcast_cat(tensors, dim=dim)
-                # check result shape
-                assert result.shape == tuple(
-                    sum(dims) if i == dim else max(dims)
-                    for i, dims in enumerate(zip(*shapes))
-                )
+    def test_weisfeiler_lehman(self):
+        """Test Weisfeiler Lehman."""
+        _, generator, _ = set_random_seed(seed=42)
+        num_nodes = 13
+        num_edges = 31
+        max_iter = 3
+        edge_index = torch.randint(num_nodes, size=(2, num_edges), generator=generator)
+        # ensure each node participates in at least one edge
+        edge_index[0, :num_nodes] = torch.arange(num_nodes)
+
+        count = 0
+        color_count = 0
+        for colors in iter_weisfeiler_lehman(edge_index=edge_index, max_iter=max_iter):
+            # check type and shape
+            assert torch.is_tensor(colors)
+            assert colors.shape == (num_nodes,)
+            assert colors.dtype == torch.long
+            # number of colors is monotonically increasing
+            num_unique_colors = len(colors.unique())
+            assert num_unique_colors >= color_count
+            color_count = num_unique_colors
+            count += 1
+        assert count == max_iter
+
+    def test_weisfeiler_lehman_approximation(self):
+        """Verify approximate WL."""
+        _, generator, _ = set_random_seed(seed=42)
+        num_nodes = 13
+        num_edges = 31
+        edge_index = torch.randint(num_nodes, size=(2, num_edges), generator=generator)
+        # ensure each node participates in at least one edge
+        edge_index[0, :num_nodes] = torch.arange(num_nodes)
+        edge_index = edge_index.unique(dim=1)
+        adj = torch.sparse_coo_tensor(indices=edge_index, values=torch.ones(size=edge_index[0].shape))
+        colors = torch.randint(3, size=(num_nodes,))
+        reference = _weisfeiler_lehman_iteration(adj=adj, colors=colors)
+        approx = _weisfeiler_lehman_iteration_approx(adj=adj, colors=colors, dim=4)
+        # normalize
+        sim_ref = reference[None, :] == reference[:, None]
+        sim_approx = approx[None, :] == approx[:, None]
+        assert torch.allclose(sim_ref, sim_approx)

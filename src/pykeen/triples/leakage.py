@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 """Tools for removing the leakage from datasets.
 
 Leakage is when the inverse of a given training triple appears in either
@@ -10,61 +8,28 @@ novel triples.
 """
 
 import logging
-from collections import defaultdict
-from typing import Collection, Dict, Iterable, List, Mapping, Optional, Set, Tuple, TypeVar, Union, cast
+from collections.abc import Collection, Iterable, Mapping
+from typing import Optional, TypeVar, Union, cast
 
+import click
 import numpy
 import scipy.sparse
 import torch
 
 from pykeen.datasets.base import EagerDataset
 from pykeen.triples.triples_factory import CoreTriplesFactory, TriplesFactory, cat_triples
-from pykeen.typing import MappedTriples
-from pykeen.utils import compact_mapping
+from pykeen.typing import LongTensor, MappedTriples
+from pykeen.utils import compact_mapping, get_connected_components
 
 __all__ = [
-    'Sealant',
-    'unleak',
-    'reindex',
+    "Sealant",
+    "unleak",
+    "reindex",
 ]
 
 logger = logging.getLogger(__name__)
-X = TypeVar('X')
-Y = TypeVar('Y')
-
-
-def find(x: X, parent: Mapping[X, X]) -> X:
-    # check validity
-    if x not in parent:
-        raise ValueError(f'Unknown element: {x}.')
-    # path compression
-    while parent[x] != x:
-        x, parent[x] = parent[x], parent[parent[x]]  # type: ignore
-    return x
-
-
-def _get_connected_components(pairs: Iterable[Tuple[X, X]]) -> Collection[Collection[X]]:
-    # collect connected components using union find with path compression
-    parent: Dict[X, X] = dict()
-    for x, y in pairs:
-        parent.setdefault(x, x)
-        parent.setdefault(y, y)
-        # get representatives
-        x = find(x=x, parent=parent)
-        y = find(x=y, parent=parent)
-        # already merged
-        if x == y:
-            continue
-        # make x the smaller one
-        if y < x:  # type: ignore
-            x, y = y, x
-        # merge
-        parent[y] = x
-    # extract partitions
-    result = defaultdict(list)
-    for k, v in parent.items():
-        result[v].append(k)
-    return list(result.values())
+X = TypeVar("X")
+Y = TypeVar("Y")
 
 
 def _select_by_most_pairs(
@@ -72,7 +37,7 @@ def _select_by_most_pairs(
     size: Mapping[int, int],
 ) -> Collection[int]:
     """Select relations to keep with the most associated pairs."""
-    result: Set[int] = set()
+    result: set[int] = set()
     for component in components:
         keep = max(component, key=size.__getitem__)
         result.update(r for r in component if r != keep)
@@ -110,7 +75,7 @@ def jaccard_similarity_scipy(
 
 def triples_factory_to_sparse_matrices(
     triples_factory: CoreTriplesFactory,
-) -> Tuple[scipy.sparse.spmatrix, scipy.sparse.spmatrix]:
+) -> tuple[scipy.sparse.spmatrix, scipy.sparse.spmatrix]:
     """Compute relation representations as sparse matrices of entity pairs.
 
     .. note ::
@@ -130,9 +95,9 @@ def triples_factory_to_sparse_matrices(
 
 
 def _to_one_hot(
-    rows: torch.LongTensor,
-    cols: torch.LongTensor,
-    shape: Tuple[int, int],
+    rows: LongTensor,
+    cols: LongTensor,
+    shape: tuple[int, int],
 ) -> scipy.sparse.spmatrix:
     """Create a one-hot matrix given indices of non-zero elements (potentially containing duplicates)."""
     rows, cols = torch.stack([rows, cols], dim=0).unique(dim=1).numpy()
@@ -147,7 +112,7 @@ def _to_one_hot(
 def mapped_triples_to_sparse_matrices(
     mapped_triples: MappedTriples,
     num_relations: int,
-) -> Tuple[scipy.sparse.spmatrix, scipy.sparse.spmatrix]:
+) -> tuple[scipy.sparse.spmatrix, scipy.sparse.spmatrix]:
     """Compute relation representations as sparse matrices of entity pairs.
 
     .. note ::
@@ -186,7 +151,7 @@ def get_candidate_pairs(
     b: Optional[scipy.sparse.spmatrix] = None,
     threshold: float,
     no_self: bool = True,
-) -> Set[Tuple[int, int]]:
+) -> set[tuple[int, int]]:
     """Find pairs of sets with Jaccard similarity above threshold using :func:`jaccard_similarity_scipy`.
 
     :param a:
@@ -219,7 +184,7 @@ class Sealant:
     triples_factory: CoreTriplesFactory
     minimum_frequency: float
     inverses: Mapping[int, int]
-    inverse_relations_to_delete: Set[int]
+    inverse_relations_to_delete: set[int]
 
     def __init__(
         self,
@@ -231,8 +196,11 @@ class Sealant:
 
         :param triples_factory: The triples factory to index.
         :param minimum_frequency: The minimum overlap between two relations' triples to consider them as inverses. The
-         default value, 0.97, is taken from `Toutanova and Chen (2015) <https://www.aclweb.org/anthology/W15-4007/>`_,
-         who originally described the generation of FB15k-237.
+            default value, 0.97, is taken from `Toutanova and Chen (2015)
+            <https://www.aclweb.org/anthology/W15-4007/>`_, who originally described the generation of FB15k-237.
+        :param symmetric: If the similarities are computed as symmetric
+        :raises NotImplementedError:
+            If symmetric is False
         """
         self.triples_factory = triples_factory
         if minimum_frequency is None:
@@ -247,24 +215,20 @@ class Sealant:
         else:
             raise NotImplementedError
         logger.info(
-            f'identified {len(self.candidate_duplicate_relations)} candidate duplicate relationships'
-            f' at similarity > {self.minimum_frequency} in {self.triples_factory}.',
+            f"identified {len(self.candidate_duplicate_relations)} candidate duplicate relationships"
+            f" at similarity > {self.minimum_frequency} in {self.triples_factory}.",
         )
         logger.info(
-            f'identified {len(self.candidate_inverse_relations)} candidate inverse pairs'
-            f' at similarity > {self.minimum_frequency} in {self.triples_factory}',
+            f"identified {len(self.candidate_inverse_relations)} candidate inverse pairs"
+            f" at similarity > {self.minimum_frequency} in {self.triples_factory}",
         )
         self.candidates = set(self.candidate_duplicate_relations).union(self.candidate_inverse_relations)
         sizes = dict(zip(*triples_factory.mapped_triples[:, 1].unique(return_counts=True)))
         self.relations_to_delete = _select_by_most_pairs(
             size=sizes,
-            components=_get_connected_components(
-                (a, b)
-                for a, b in self.candidates
-                if a != b
-            ),
+            components=get_connected_components((a, b) for a, b in self.candidates if a != b),
         )
-        logger.info(f'identified {len(self.candidates)} from {self.triples_factory} to delete')
+        logger.info(f"identified {len(self.candidates)} from {self.triples_factory} to delete")
 
     def apply(self, triples_factory: CoreTriplesFactory) -> CoreTriplesFactory:
         """Make a new triples factory containing neither duplicate nor inverse relationships."""
@@ -282,44 +246,41 @@ def unleak(
     :param train: The target triples factory
     :param triples_factories: All other triples factories (test, validate, etc.)
     :param n: Either the (integer) number of top relations to keep or the (float) percentage of top relationships
-     to keep. If left none, frequent relations are not removed.
+        to keep. If left none, frequent relations are not removed.
     :param minimum_frequency: The minimum overlap between two relations' triples to consider them as inverses or
-     duplicates. The default value, 0.97, is taken from
-     `Toutanova and Chen (2015) <https://www.aclweb.org/anthology/W15-4007/>`_, who originally described the generation
-     of FB15k-237.
+        duplicates. The default value, 0.97, is taken from `Toutanova and Chen (2015)
+        <https://www.aclweb.org/anthology/W15-4007/>`_, who originally described the generation of FB15k-237.
+    :returns:
+        A sequence of reindexed triples factories
     """
     if n is not None:
         frequent_relations = train.get_most_frequent_relations(n=n)
-        logger.info(f'keeping most frequent relations from {train}')
+        logger.info(f"keeping most frequent relations from {train}")
         train = train.new_with_restriction(relations=frequent_relations)
         triples_factories = tuple(
-            triples_factory.new_with_restriction(relations=frequent_relations)
-            for triples_factory in triples_factories
+            triples_factory.new_with_restriction(relations=frequent_relations) for triples_factory in triples_factories
         )
 
     # Calculate which relations are the inverse ones
     sealant = Sealant(train, minimum_frequency=minimum_frequency)
 
     if not sealant.relations_to_delete:
-        logger.info(f'no relations to delete identified from {train}')
+        logger.info(f"no relations to delete identified from {train}")
     else:
         train = sealant.apply(train)
-        triples_factories = tuple(
-            sealant.apply(triples_factory)
-            for triples_factory in triples_factories
-        )
+        triples_factories = tuple(sealant.apply(triples_factory) for triples_factory in triples_factories)
 
     return reindex(train, *triples_factories)
 
 
 def _generate_compact_vectorized_lookup(
-    ids: torch.LongTensor,
+    ids: LongTensor,
     label_to_id: Mapping[str, int],
-) -> Tuple[Mapping[str, int], torch.LongTensor]:
+) -> tuple[Mapping[str, int], LongTensor]:
     """
     Given a tensor of IDs and a label to ID mapping, retain only occurring IDs, and compact the mapping.
 
-    Additionally returns a vectorized translation, i.e. a tensor `translation` of shape (max_old_id,) with
+    Additionally, returns a vectorized translation, i.e. a tensor `translation` of shape (max_old_id,) with
     `translation[old_id] = new_id` for all translated IDs and `translation[old_id] = -1` for non-occurring IDs.
     This allows to use `translation[ids]` to translate the IDs as a simple integer index based lookup.
 
@@ -334,11 +295,9 @@ def _generate_compact_vectorized_lookup(
     # get existing IDs
     existing_ids = set(ids.view(-1).unique().tolist())
     # remove non-existing ID from label mapping
-    label_to_id, old_to_new_id = compact_mapping(mapping={
-        label: i
-        for label, i in label_to_id.items()
-        if i in existing_ids
-    })
+    label_to_id, old_to_new_id = compact_mapping(
+        mapping={label: i for label, i in label_to_id.items() if i in existing_ids}
+    )
     # create translation tensor
     translation = torch.full(size=(max(existing_ids) + 1,), fill_value=-1)
     for old, new in old_to_new_id.items():
@@ -348,8 +307,8 @@ def _generate_compact_vectorized_lookup(
 
 def _translate_triples(
     triples: MappedTriples,
-    entity_translation: torch.LongTensor,
-    relation_translation: torch.LongTensor,
+    entity_translation: LongTensor,
+    relation_translation: LongTensor,
 ) -> MappedTriples:
     """
     Translate triples given vectorized translations for entities and relations.
@@ -378,18 +337,18 @@ def _translate_triples(
     return triples
 
 
-def reindex(*triples_factories: CoreTriplesFactory) -> List[CoreTriplesFactory]:
+def reindex(*triples_factories: CoreTriplesFactory) -> list[CoreTriplesFactory]:
     """Reindex a set of triples factories."""
     # get entities and relations occurring in triples
     all_triples = cat_triples(*triples_factories)
 
     if not all(isinstance(f, TriplesFactory) for f in triples_factories):
         raise NotImplementedError("reindex has not been updated for non-TriplesFactory yet.")
-    triples_factories = cast(Tuple[TriplesFactory, ...], triples_factories)
+    triples_factories = cast(tuple[TriplesFactory, ...], triples_factories)
 
     # generate ID translation and new label to Id mappings
     one_factory = triples_factories[0]
-    (entity_to_id, entity_id_translation), (relation_to_id, relation_id_translation) = [
+    (entity_to_id, entity_id_translation), (relation_to_id, relation_id_translation) = (
         _generate_compact_vectorized_lookup(
             ids=all_triples[:, cols],
             label_to_id=label_to_id,
@@ -398,7 +357,7 @@ def reindex(*triples_factories: CoreTriplesFactory) -> List[CoreTriplesFactory]:
             ([0, 2], one_factory.entity_to_id),
             (1, one_factory.relation_to_id),
         )
-    ]
+    )
 
     return [
         TriplesFactory(
@@ -415,26 +374,28 @@ def reindex(*triples_factories: CoreTriplesFactory) -> List[CoreTriplesFactory]:
     ]
 
 
+@click.command()
 def _main():
     """Test unleaking FB15K.
 
     Run with ``python -m pykeen.triples.leakage``.
     """
     from pykeen.datasets import get_dataset
-    logging.basicConfig(format='pykeen: %(message)s', level=logging.INFO)
 
-    fb15k = get_dataset(dataset='fb15k')
-    fb15k.summarize()
+    logging.basicConfig(format="pykeen: %(message)s", level=logging.INFO)
+
+    fb15k = get_dataset(dataset="fb15k")
+    click.echo(fb15k.summary_str())
 
     n = 401  # magic 401 from the paper
     train, test, validate = unleak(fb15k.training, fb15k.testing, fb15k.validation, n=n)
-    print()
-    EagerDataset(train, test, validate).summarize(title='FB15k (cleaned)')
+    click.echo("")
+    click.echo(EagerDataset(train, test, validate).summary_str(title="FB15k (cleaned)"))
 
-    fb15k237 = get_dataset(dataset='fb15k237')
-    print('\nSummary FB15K-237')
-    fb15k237.summarize()
+    fb15k237 = get_dataset(dataset="fb15k237")
+    click.echo("\nSummary FB15K-237")
+    click.echo(fb15k237.summary_str())
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     _main()

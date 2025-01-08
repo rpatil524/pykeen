@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 """Entrypoint module, in case you use ``python -m pykeen.hpo``.
 
 Why does this file exist, and why ``__main__``? For more info, read:
@@ -9,5 +7,5 @@ Why does this file exist, and why ``__main__``? For more info, read:
 
 from .cli import optimize
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     optimize()

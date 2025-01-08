@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 """The Hetionet dataset.
 
 Get a summary with ``python -m pykeen.datasets.hetionet``
@@ -13,15 +11,15 @@ from .base import SingleTabbedDataset
 from ..typing import TorchRandomHint
 
 __all__ = [
-    'Hetionet',
+    "Hetionet",
 ]
 
-URL = 'https://github.com/hetio/hetionet/raw/master/hetnet/tsv/hetionet-v1.0-edges.sif.gz'
+URL = "https://github.com/hetio/hetionet/raw/master/hetnet/tsv/hetionet-v1.0-edges.sif.gz"
 
 
 @parse_docdata
 class Hetionet(SingleTabbedDataset):
-    """The Hetionet dataset is a large biological network.
+    """The Hetionet dataset from [himmelstein2017]_.
 
     In its publication [himmelstein2017]_, it is demonstrated to be useful for link prediction in drug repositioning
     and made publicly available through its `GitHub repository <https://github.com/hetio/hetionet>`_ in several formats.
@@ -39,23 +37,23 @@ class Hetionet(SingleTabbedDataset):
         entities: 45158
         relations: 24
         triples: 2250197
+        training: 1800157
+        testing: 225020
+        validation: 225020
     """
 
     def __init__(
         self,
-        create_inverse_triples: bool = False,
         random_state: TorchRandomHint = 0,
         **kwargs,
     ):
         """Initialize the `Hetionet <https://github.com/hetio/hetionet>`_ dataset from [himmelstein2017]_.
 
-        :param create_inverse_triples: Should inverse triples be created? Defaults to false.
         :param random_state: The random seed to use in splitting the dataset. Defaults to 0.
         :param kwargs: keyword arguments passed to :class:`pykeen.datasets.base.SingleTabbedDataset`.
         """
         super().__init__(
             url=URL,
-            create_inverse_triples=create_inverse_triples,
             random_state=random_state,
             **kwargs,
         )
@@ -64,9 +62,11 @@ class Hetionet(SingleTabbedDataset):
 @click.command()
 @verbose_option
 def _main():
-    ds = Hetionet()
+    from pykeen.datasets import get_dataset
+
+    ds = get_dataset(dataset=Hetionet)
     ds.summarize()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     _main()

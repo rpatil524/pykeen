@@ -37,17 +37,12 @@ hosted and local installations, change it slightly to check if PyKEEN is already
     ! python -c "import pykeen" || pip install git+https://github.com/pykeen/pykeen.git
     pykeen.env()
 
-If you're having trouble with imports related to the plugin systems, try adding the following lines:
+.. note::
 
-.. code-block:: python
-
-    from pkg_resources import require
-    require('pykeen')
-
-.. seealso::
-
-    `PyKEEN issue #373 <https://github.com/pykeen/pykeen/issues/373>`_ for more information or if you
-    would like to discuss further
+    Old versions of PyKEEN that used :mod:`class_resolve` version 0.3.4 and below loaded
+    datasets via entrypoints. This was unpredictable on Kaggle and Google Colab, so it was
+    removed in https://github.com/pykeen/pykeen/pull/832. More information can also be found
+    on `PyKEEN issue #373 <https://github.com/pykeen/pykeen/issues/373>`_.
 
 To enable GPU usage, go to the Runtime -> Change runtime type menu to enable a GPU with your notebook.
 
@@ -57,23 +52,17 @@ We've added experimental support for Windows as of `!95 <https://github.com/pyke
 However, be warned, it's much less straightforward to install PyTorch and therefore PyKEEN on Windows.
 
 First, to install PyTorch, you must install `Anaconda <https://www.anaconda.com/>`_ and follow
-the instructions on the PyTorch website. For example, if you're using CUDA version 10.2, use
-the following command:
-
-.. code-block:: bash
-
-    $ conda install pytorch torchvision cudatoolkit=10.2 -c pytorch
-
+the instructions on the `PyTorch website <https://pytorch.org/get-started/locally/>`_.
 Then, assuming your `python` and `pip` command are linked to the same place where conda is installing,
 you can proceed with the normal installation (or the installation from GitHub as shown above):
 
 .. code-block:: bash
 
-    $ pip install pytorch
+    $ pip install pykeen
 
 If you're having trouble with ``pip`` or ``sqlite``, you might also have to use
 ``conda install pip setuptools wheel sqlite``. See our
-`AppVeyor configuration <https://github.com/pykeen/pykeen/blob/master/.appveyor.yml>`_
+`GitHub Actions configuration <https://github.com/pykeen/pykeen/blob/master/.github/workflows/tests.yml>`_
 on GitHub for inspiration.
 
 If you know better ways to install on Windows or would like to share some references,
@@ -81,8 +70,7 @@ we'd really appreciate it.
 
 Development
 -----------
-Alternatively, the latest code can be installed in development mode
-with:
+The latest code can be installed in development mode with:
 
 .. code-block:: bash
 
@@ -108,12 +96,18 @@ of the ``setup.cfg``. They can be included with installation using the bracket n
 ``pip install pykeen[docs]`` or ``pip install -e .[docs]``. Several can be listed, comma-delimited like in
 ``pip install pykeen[docs,plotting]``.
 
-==============  =======================================================
-Name            Description
-==============  =======================================================
-``plotting``    Plotting with ``seaborn`` and generation of word clouds
-``mlflow``      Tracking of results with ``mlflow``
-``wandb``       Tracking of results with ``wandb``
-``docs``        Building of the documentation
-``templating``  Building of templated documentation, like the README
-==============  =======================================================
+================  =========================================================================================
+Name              Description
+================  =========================================================================================
+``templating``    Building of templated documentation, like the README
+``plotting``      Plotting with ``seaborn`` and generation of word clouds
+``mlflow``        Tracking of results with ``mlflow``
+``wandb``         Tracking of results with ``wandb``
+``neptune``       Tracking of results with ``neptune``
+``tensorboard``   Tracking of results with :mod:`tensorboard` via :mod:`torch.utils.tensorboard`
+``transformers``  Label-based initialization with ``transformers``.
+``tests``         Code needed to run tests. Typically handled with ``tox -e py``
+``docs``          Building of the documentation
+``opt_einsum``    Improve performance of :func:`torch.einsum` by replacing with :func:`opt_einsum.contract`
+``biomedicine``   Use of :mod:`pyobo` for lookup of biomedical entity labels
+================  =========================================================================================

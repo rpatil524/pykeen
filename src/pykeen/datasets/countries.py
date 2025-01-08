@@ -1,15 +1,13 @@
-# -*- coding: utf-8 -*-
-
 """The Countries dataset."""
 
 from docdata import parse_docdata
 
 from .base import UnpackedRemoteDataset
 
-BASE_URL = 'https://raw.githubusercontent.com/ZhenfengLei/KGDatasets/master/Countries/Countries_S1'
+BASE_URL = "https://raw.githubusercontent.com/ZhenfengLei/KGDatasets/master/Countries/Countries_S1"
 
 __all__ = [
-    'Countries',
+    "Countries",
 ]
 
 
@@ -32,20 +30,18 @@ class Countries(UnpackedRemoteDataset):
         triples: 1158
     """
 
-    def __init__(self, create_inverse_triples: bool = False, **kwargs):
+    def __init__(self, **kwargs):
         """Initialize the Countries small dataset.
 
-        :param create_inverse_triples: Should inverse triples be created? Defaults to false.
         :param kwargs: keyword arguments passed to :class:`pykeen.datasets.base.UnpackedRemoteDataset`.
         """
         super().__init__(
-            training_url=f'{BASE_URL}/train.txt',
-            testing_url=f'{BASE_URL}/test.txt',
-            validation_url=f'{BASE_URL}/valid.txt',
-            create_inverse_triples=create_inverse_triples,
+            training_url=f"{BASE_URL}/train.txt",
+            testing_url=f"{BASE_URL}/test.txt",
+            validation_url=f"{BASE_URL}/valid.txt",
             **kwargs,
         )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     Countries.cli()

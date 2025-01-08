@@ -1,4 +1,4 @@
 Similarity
 ==========
-.. automodule:: pykeen.nn.sim
-    :members:
+.. automodapi:: pykeen.nn.sim
+    :include-all-objects:

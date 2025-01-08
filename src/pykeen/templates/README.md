@@ -7,8 +7,8 @@
 </h1>
 
 <p align="center">
-  <a href="https://github.com/pykeen/pykeen/actions">
-    <img src="https://github.com/pykeen/pykeen/workflows/Tests%20master/badge.svg"
+  <a href="https://github.com/pykeen/pykeen/actions/workflows/common.yml">
+    <img src="https://github.com/pykeen/pykeen/actions/workflows/common.yml/badge.svg"
          alt="GitHub Actions">
   </a>
 
@@ -23,6 +23,18 @@
   <a href="https://optuna.org">
     <img src="https://img.shields.io/badge/Optuna-integrated-blue" alt="Optuna integrated" height="20">
   </a>
+
+  <a href="https://pytorchlightning.ai">
+    <img src="https://img.shields.io/badge/-Lightning-792ee5?logo=pytorchlightning&logoColor=white" alt="PyTorch Lightning">
+  </a>
+
+  <a href="https://github.com/astral-sh/ruff">
+    <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff" style="max-width:100%;">
+  </a>
+
+  <a href=".github/CODE_OF_CONDUCT.md">
+    <img src="https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg" alt="Contributor Covenant">
+  </a>
 </p>
 
 <p align="center">
@@ -33,29 +45,30 @@
 <p align="center">
   <a href="#installation">Installation</a> •
   <a href="#quickstart">Quickstart</a> •
-  <a href="#datasets-{{ n_datasets }}">Datasets</a> •
-  <a href="#models-{{ n_models }}">Models</a> •
+  <a href="#datasets">Datasets ({{ n_datasets }})</a> •
+  <a href="#inductive-datasets">Inductive Datasets ({{ n_inductive_datasets }})</a> •
+  <a href="#models">Models ({{ n_models }})</a> •
   <a href="#supporters">Support</a> •
   <a href="#citation">Citation</a>
 </p>
 
 ## Installation ![PyPI - Python Version](https://img.shields.io/pypi/pyversions/pykeen) ![PyPI](https://img.shields.io/pypi/v/pykeen)
 
-The latest stable version of PyKEEN can be downloaded and installed from
-[PyPI](https://pypi.org/project/pykeen) with:
+The latest stable version of PyKEEN requires Python 3.9+. It can be downloaded
+and installed from [PyPI](https://pypi.org/project/pykeen) with:
 
-```bash
-$ pip install pykeen
+```shell
+pip install pykeen
 ```
 
 The latest version of PyKEEN can be installed directly from the
-source on [GitHub](https://github.com/pykeen/pykeen) with:
+source code on [GitHub](https://github.com/pykeen/pykeen) with:
 
-```bash
+```shell
 pip install git+https://github.com/pykeen/pykeen.git
 ```
 
-More information about installation (e.g., development mode, Windows installation, extras)
+More information about installation (e.g., development mode, Windows installation, Colab, Kaggle, extras)
 can be found in the [installation documentation](https://pykeen.readthedocs.io/en/latest/installation.html).
 
 ## Quickstart [![Documentation Status](https://readthedocs.org/projects/pykeen/badge/?version=latest)](https://pykeen.readthedocs.io/en/latest/?badge=latest)
@@ -79,8 +92,9 @@ result = pipeline(
 ```
 
 The results are returned in an instance of the [PipelineResult](https://pykeen.readthedocs.io/en/latest/reference/pipeline.html#pykeen.pipeline.PipelineResult)
-dataclass that has attributes for the trained model, the training loop, the evaluation, and more. See the tutorials on
-[understanding the evaluation](https://pykeen.readthedocs.io/en/latest/tutorial/understanding_evaluation.html)
+dataclass that has attributes for the trained model, the training loop, the evaluation, and more. See the tutorials
+on [using your own dataset](https://pykeen.readthedocs.io/en/latest/byo/data.html),
+[understanding the evaluation](https://pykeen.readthedocs.io/en/latest/tutorial/understanding_evaluation.html),
 and [making novel link predictions](https://pykeen.readthedocs.io/en/latest/tutorial/making_predictions.html).
 
 PyKEEN is extensible such that:
@@ -96,63 +110,88 @@ The full documentation can be found at https://pykeen.readthedocs.io.
 Below are the models, datasets, training modes, evaluators, and metrics implemented
 in ``pykeen``.
 
-### Datasets ({{ n_datasets }})
+### Datasets 
 
-The citation for each dataset corresponds to either the paper describing the dataset,
-the first paper published using the dataset with knowledge graph embedding models,
-or the URL for the dataset if neither of the first two are available.
+The following {{ n_datasets }} datasets are built in to PyKEEN. The citation for each dataset corresponds to either the paper
+describing the dataset, the first paper published using the dataset with knowledge graph embedding models,
+or the URL for the dataset if neither of the first two are available. If you want to use a custom dataset,
+see the [Bring Your Own Dataset](https://pykeen.readthedocs.io/en/latest/byo/data.html) tutorial. If you
+have a suggestion for another dataset to include in PyKEEN, please let us know
+[here](https://github.com/pykeen/pykeen/issues/new?assignees=cthoyt&labels=New+Dataset&template=dataset-request.md&title=Add+%5BDATASET+NAME%5D).
 
 {{ datasets }}
 
-### Models ({{ n_models }})
+### Inductive Datasets
+
+The following {{ n_inductive_datasets }} inductive datasets are built in to PyKEEN.
+
+{{ inductive_datasets }}
+
+### Representations
+
+The following {{ n_representations }} representations are implemented by PyKEEN.
+
+{{ representations }}
+
+### Interactions
+
+The following {{ n_interactions }} interactions are implemented by PyKEEN.
+
+{{ interactions }}
+
+### Models
+
+The following {{ n_models }} models are implemented by PyKEEN.
 
 {{ models }}
 
-### Losses ({{ n_losses }})
+### Losses
+
+The following {{ n_losses }} losses are implemented by PyKEEN.
 
 {{ losses }}
 
-### Regularizers ({{ n_regularizers }})
+### Regularizers
+
+The following {{ n_regularizers }} regularizers are implemented by PyKEEN.
 
 {{ regularizers }}
 
-### Optimizers ({{ n_optimizers }})
+### Training Loops
 
-{{ optimizers }}
-
-### Training Loops ({{ n_training_loops }})
+The following {{ n_training_loops }} training loops are implemented in PyKEEN.
 
 {{ training_loops }}
 
-### Negative Samplers ({{ n_negative_samplers }})
+### Negative Samplers
+
+The following {{ n_negative_samplers }} negative samplers are implemented in PyKEEN.
 
 {{ negative_samplers }}
 
-### Stoppers ({{ n_stoppers }})
+### Stoppers
+
+The following {{ n_stoppers }} stoppers are implemented in PyKEEN.
 
 {{ stoppers }}
 
-### Evaluators ({{ n_evaluators }})
+### Evaluators
+
+The following {{ n_evaluators }} evaluators are implemented in PyKEEN.
 
 {{ evaluators }}
 
-### Metrics ({{ n_metrics }})
+### Metrics
+
+The following {{ n_metrics }} metrics are implemented in PyKEEN.
 
 {{ metrics }}
 
-### Trackers ({{ n_trackers }})
+### Trackers
+
+The following {{ n_trackers }} trackers are implemented in PyKEEN.
 
 {{ trackers }}
-
-## Hyper-parameter Optimization
-
-### Samplers ({{ n_hpo_samplers }})
-
-{{ hpo_samplers }}
-
-Any sampler class extending the [optuna.samplers.BaseSampler](https://optuna.readthedocs.io/en/stable/reference/generated/optuna.samplers.BaseSampler.html#optuna.samplers.BaseSampler),
-such as their sampler implementing the [CMA-ES](https://optuna.readthedocs.io/en/stable/reference/generated/optuna.samplers.CmaEsSampler.html#optuna.samplers.CmaEsSampler)
-algorithm, can also be used.
 
 ## Experimentation
 
@@ -161,7 +200,7 @@ algorithm, can also be used.
 PyKEEN includes a set of curated experimental settings for reproducing past landmark
 experiments. They can be accessed and run like:
 
-```bash
+```shell
 pykeen experiments reproduce tucker balazevic2019 fb15k
 ```
 
@@ -173,21 +212,23 @@ The output directory can be optionally set with `-d`.
 PyKEEN includes the ability to specify ablation studies using the
 hyper-parameter optimization module. They can be run like:
 
-```bash
+```shell
 pykeen experiments ablation ~/path/to/config.json
 ```
 
 ### Large-scale Reproducibility and Benchmarking Study
 
 We used PyKEEN to perform a large-scale reproducibility and benchmarking study which are described in
-[our article](https://arxiv.org/abs/2006.13365):
+[our article](https://doi.org/10.1109/TPAMI.2021.3124805):
 
 ```bibtex
 @article{ali2020benchmarking,
-  title={Bringing Light Into the Dark: A Large-scale Evaluation of Knowledge Graph Embedding Models Under a Unified Framework},
   author={Ali, Mehdi and Berrendorf, Max and Hoyt, Charles Tapley and Vermue, Laurent and Galkin, Mikhail and Sharifzadeh, Sahand and Fischer, Asja and Tresp, Volker and Lehmann, Jens},
-  journal={arXiv preprint arXiv:2006.13365},
-  year={2020}
+  journal={IEEE Transactions on Pattern Analysis and Machine Intelligence},
+  title={Bringing Light Into the Dark: A Large-scale Evaluation of Knowledge Graph Embedding Models under a Unified Framework},
+  year={2021},
+  pages={1-1},
+  doi={10.1109/TPAMI.2021.3124805}}
 }
 ```
 
@@ -196,8 +237,11 @@ at https://github.com/pykeen/benchmarking.
 
 ## Contributing
 
-Contributions, whether filing an issue, making a pull request, or forking, are appreciated. 
+Contributions, whether filing an issue, making a pull request, or forking, are appreciated.
 See [CONTRIBUTING.md](/CONTRIBUTING.md) for more information on getting involved.
+
+If you have questions, please use the GitHub discussions feature at
+https://github.com/pykeen/pykeen/discussions/new.
 
 ## Acknowledgements
 
@@ -220,13 +264,26 @@ This project has been supported by several organizations (in alphabetical order)
 - [Technical University of Denmark - DTU Compute - Section for Statistics and Data Analysis](https://www.compute.dtu.dk/english/research/research-sections/stat)
 - [University of Bonn](https://www.uni-bonn.de/)
 
+### Funding
+
+The development of PyKEEN has been funded by the following grants:
+
+| Funding Body                                             | Program                                                                                                                       | Grant           |
+|----------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------|-----------------|
+| DARPA                                                    | [Young Faculty Award (PI: Benjamin Gyori)](https://indralab.github.io/#projects)                                              | W911NF2010255   |
+| DARPA                                                    | [Automating Scientific Knowledge Extraction (ASKE)](https://www.darpa.mil/program/automating-scientific-knowledge-extraction) | HR00111990009   |
+| German Federal Ministry of Education and Research (BMBF) | [Maschinelles Lernen mit Wissensgraphen (MLWin)](https://mlwin.de)                                                            | 01IS18050D      |
+| German Federal Ministry of Education and Research (BMBF) | [Munich Center for Machine Learning (MCML)](https://mcml.ai)                                                                  | 01IS18036A      |
+| Innovation Fund Denmark (Innovationsfonden)              | [Danish Center for Big Data Analytics driven Innovation (DABAI)](https://dabai.dk)                                            | Grand Solutions |
+
 ### Logo
 
-The PyKEEN logo was designed by Carina Steinborn.
+The PyKEEN logo was designed by [Carina Steinborn](https://www.xing.com/profile/Carina_Steinborn2)
 
 ## Citation
 
-If you have found PyKEEN useful in your work, please consider citing [our article](https://arxiv.org/abs/2007.14175):
+If you have found PyKEEN useful in your work, please consider citing
+[our article](http://jmlr.org/papers/v22/20-825.html):
 
 ```bibtex
 @article{ali2021pykeen,

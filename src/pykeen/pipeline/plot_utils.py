@@ -1,38 +1,39 @@
-# -*- coding: utf-8 -*-
-
 """Plotting utilities for the pipeline results."""
 
 import logging
-from typing import Mapping, Optional, Set
+from collections.abc import Mapping
+from typing import Callable, Optional
 
 from ..losses import loss_resolver
-from ..nn.emb import Embedding
+from ..models.nbase import ERModel
+from ..nn.representation import Representation
 from ..stoppers import EarlyStopper
 
 __all__ = [
-    'plot_losses',
-    'plot_early_stopping',
-    'plot_er',
-    'plot',
+    "plot_losses",
+    "plot_early_stopping",
+    "plot_er",
+    "plot",
 ]
 
 logger = logging.getLogger(__name__)
 
-REDUCER_RELATION_WHITELIST = {'PCA'}
+REDUCER_RELATION_WHITELIST = {"PCA"}
 
 
 def plot_losses(pipeline_result, *, ax=None):
     """Plot the losses per epoch."""
     import seaborn as sns
-    sns.set_style('darkgrid')
+
+    sns.set_style("darkgrid")
 
     ax = _ensure_ax(ax)
     rv = sns.lineplot(x=range(len(pipeline_result.losses)), y=pipeline_result.losses, ax=ax)
 
     loss_name = loss_resolver.normalize_inst(pipeline_result.model.loss)
-    ax.set_ylabel(f'{loss_name} Loss')
-    ax.set_xlabel('Epoch')
-    ax.set_title(pipeline_result.title if pipeline_result.title is not None else 'Losses Plot')
+    ax.set_ylabel(f"{loss_name} Loss")
+    ax.set_xlabel("Epoch")
+    ax.set_title(pipeline_result.title if pipeline_result.title is not None else "Losses Plot")
     return rv
 
 
@@ -45,32 +46,51 @@ def plot_early_stopping(pipeline_result, *, ax=None, lineplot_kwargs=None):
 
     ax = _ensure_ax(ax)
 
-    x = [
-        (1 + e) * pipeline_result.stopper.frequency
-        for e in range(len(pipeline_result.stopper.results))
-    ]
-    rv = sns.lineplot(x=x, y=pipeline_result.stopper.results, ax=ax, marker='o', **(lineplot_kwargs or {}))
+    x = [(1 + e) * pipeline_result.stopper.frequency for e in range(len(pipeline_result.stopper.results))]
+    rv = sns.lineplot(x=x, y=pipeline_result.stopper.results, ax=ax, marker="o", **(lineplot_kwargs or {}))
 
     ax.set_ylabel(pipeline_result.stopper.metric)
-    ax.set_xlabel('Epoch')
-    ax.set_title(pipeline_result.title if pipeline_result.title is not None else 'Early Stopper Evaluation Plot')
+    ax.set_xlabel("Epoch")
+    ax.set_title(pipeline_result.title if pipeline_result.title is not None else "Early Stopper Evaluation Plot")
     return rv
 
 
-def _default_entity_embedding_getter(m) -> Embedding:
-    return m.entity_embeddings
+def build_representation_getter(relation: bool = False, index: int = 0) -> Callable[[ERModel], Representation]:
+    """
+    Build a representation getter.
 
+    :param relation:
+        whether to get relation representations, or entity representations.
+    :param index:
+        the index of the representation to get
 
-def _default_relation_embedding_getter(m) -> Embedding:
-    return m.relation_embeddings
+    :return:
+        a function to get the representation.
+    """
+
+    def getter(model: ERModel) -> Representation:
+        """
+        Get a specific representation from model.
+
+        :param model:
+            the model
+
+        :return:
+            the representation
+        """
+        # cf. also https://github.com/pykeen/pykeen/issues/1071
+        representations = model.relation_representations if relation else model.entity_representations
+        return representations[index]
+
+    return getter
 
 
 def plot_er(  # noqa: C901
     pipeline_result,
     *,
     model: Optional[str] = None,
-    entities: Optional[Set[str]] = None,
-    relations: Optional[Set[str]] = None,
+    entities: Optional[set[str]] = None,
+    relations: Optional[set[str]] = None,
     apply_limits: bool = True,
     margin: float = 0.4,
     plot_entities: bool = True,
@@ -80,6 +100,7 @@ def plot_er(  # noqa: C901
     entity_embedding_getter=None,
     relation_embedding_getter=None,
     ax=None,
+    subtitle: Optional[str] = None,
     **kwargs,
 ):
     """Plot the reduced entities and relation vectors in 2D.
@@ -103,6 +124,7 @@ def plot_er(  # noqa: C901
         defaults to :func:`_default_relation_embedding_getter`, which just gets ``model.relation_embeddings``. Note,
         the default only works with old-style PyKEEN models.
     :param ax: The matplotlib axis, if pre-defined
+    :param subtitle: A user-defined subtitle. Is inferred if not given. Pass an empty string to not use a subtitle.
     :param kwargs: The keyword arguments passed to `__init__()` of
         the reducer class (e.g., PCA, TSNE)
     :returns: The axis
@@ -120,28 +142,30 @@ def plot_er(  # noqa: C901
         raise ValueError
 
     if plot_relations is None:  # automatically set to true for translational models, false otherwise
-        plot_relations = pipeline_result.model.__class__.__name__.lower().startswith('trans')
+        plot_relations = pipeline_result.model.__class__.__name__.lower().startswith("trans")
 
     if model is None:
-        model = 'PCA'
+        model = "PCA"
     reducer_cls, reducer_kwargs = _get_reducer_cls(model, **kwargs)
     if plot_relations and reducer_cls.__name__ not in REDUCER_RELATION_WHITELIST:
-        raise ValueError(f'Can not use reducer {reducer_cls} when projecting relations. Will result in nonsense')
+        raise ValueError(f"Can not use reducer {reducer_cls} when projecting relations. Will result in nonsense")
     reducer = reducer_cls(n_components=2, **reducer_kwargs)
 
     ax = _ensure_ax(ax)
 
-    sns.set_style('whitegrid')
+    sns.set_style("whitegrid")
 
     if entity_embedding_getter is None:
-        entity_embedding_getter = _default_entity_embedding_getter
+        entity_embedding_getter = build_representation_getter(relation=False, index=0)
     if relation_embedding_getter is None:
-        relation_embedding_getter = _default_relation_embedding_getter
+        relation_embedding_getter = build_representation_getter(relation=True, index=0)
 
     if plot_relations and plot_entities:
         e_embeddings, e_reduced = _reduce_embeddings(entity_embedding_getter(pipeline_result.model), reducer, fit=True)
         r_embeddings, r_reduced = _reduce_embeddings(
-            relation_embedding_getter(pipeline_result.model), reducer, fit=False,
+            relation_embedding_getter(pipeline_result.model),
+            reducer,
+            fit=False,
         )
 
         xmax = max(r_embeddings[:, 0].max(), e_embeddings[:, 0].max()) + margin
@@ -151,7 +175,9 @@ def plot_er(  # noqa: C901
     elif plot_relations:
         e_embeddings, e_reduced = None, False
         r_embeddings, r_reduced = _reduce_embeddings(
-            relation_embedding_getter(pipeline_result.model), reducer, fit=True,
+            relation_embedding_getter(pipeline_result.model),
+            reducer,
+            fit=True,
         )
 
         xmax = r_embeddings[:, 0].max() + margin
@@ -169,13 +195,15 @@ def plot_er(  # noqa: C901
     else:
         raise ValueError  # not even possible
 
-    if not e_reduced and not r_reduced:
-        subtitle = ''
+    if subtitle is not None:
+        pass  # a specific subtitle has been given
+    elif not e_reduced and not r_reduced:
+        subtitle = ""
     elif reducer_kwargs:
-        subtitle = ", ".join("=".join(item) for item in reducer_kwargs.items())
-        subtitle = f' using {reducer_cls.__name__} ({subtitle})'
+        _subtitle_ending = ", ".join(f"{key}={value}" for key, value in reducer_kwargs.items())
+        subtitle = f" using {reducer_cls.__name__} ({_subtitle_ending})"
     else:
-        subtitle = f' using {reducer_cls.__name__}'
+        subtitle = f" using {reducer_cls.__name__}"
 
     if plot_entities:
         entity_id_to_label = pipeline_result.training.entity_id_to_label
@@ -184,7 +212,7 @@ def plot_er(  # noqa: C901
             if entities and entity_label not in entities:
                 continue
             x, y = entity_reduced_embedding
-            ax.scatter(x, y, color='black')
+            ax.scatter(x, y, color="black")
             ax.annotate(entity_label, (x + annotation_x_offset, y + annotation_y_offset))
 
     if plot_relations:
@@ -194,15 +222,15 @@ def plot_er(  # noqa: C901
             if relations and relation_label not in relations:
                 continue
             x, y = relation_reduced_embedding
-            ax.arrow(0, 0, x, y, color='black')
+            ax.arrow(0, 0, x, y, color="black")
             ax.annotate(relation_label, (x + annotation_x_offset, y + annotation_y_offset))
 
     if plot_entities and plot_relations:
-        ax.set_title(f'Entity/Relation Plot{subtitle}')
+        ax.set_title(f"Entity/Relation Plot{subtitle}")
     elif plot_entities:
-        ax.set_title(f'Entity Plot{subtitle}')
+        ax.set_title(f"Entity Plot{subtitle}")
     elif plot_relations:
-        ax.set_title(f'Relation Plot{subtitle}')
+        ax.set_title(f"Relation Plot{subtitle}")
 
     if apply_limits:
         ax.set_xlim([xmin, xmax])
@@ -216,13 +244,14 @@ def _ensure_ax(ax):
         return ax
 
     import matplotlib.pyplot as plt
+
     return plt.gca()
 
 
-def _reduce_embeddings(embedding: Embedding, reducer, fit: bool = False):
+def _reduce_embeddings(embedding: Representation, reducer, fit: bool = False):
     embeddings_numpy = embedding(indices=None).detach().cpu().numpy()
     if embeddings_numpy.shape[1] == 2:
-        logger.debug('not reducing entity embeddings, already dim=2')
+        logger.debug("not reducing entity embeddings, already dim=2")
         return embeddings_numpy, False
     elif fit:
         return reducer.fit_transform(embeddings_numpy), True
@@ -240,27 +269,28 @@ def _get_reducer_cls(model: str, **kwargs):
 
     :raises ValueError: if invalid model name is passed
     """
-    if model.upper() == 'PCA':
+    # TODO: use a class-resolver?
+    if model.upper() == "PCA":
         from sklearn.decomposition import PCA as Reducer  # noqa:N811
-    elif model.upper() == 'KPCA':
-        kwargs.setdefault('kernel', 'rbf')
+    elif model.upper() == "KPCA":
+        kwargs.setdefault("kernel", "rbf")
         from sklearn.decomposition import KernelPCA as Reducer
-    elif model.upper() == 'GRP':
+    elif model.upper() == "GRP":
         from sklearn.random_projection import GaussianRandomProjection as Reducer
-    elif model.upper() == 'SRP':
+    elif model.upper() == "SRP":
         from sklearn.random_projection import SparseRandomProjection as Reducer
-    elif model.upper() in {'T-SNE', 'TSNE'}:
+    elif model.upper() in {"T-SNE", "TSNE"}:
         from sklearn.manifold import TSNE as Reducer  # noqa:N811
-    elif model.upper() in {'LLE', 'LOCALLYLINEAREMBEDDING'}:
+    elif model.upper() in {"LLE", "LOCALLYLINEAREMBEDDING"}:
         from sklearn.manifold import LocallyLinearEmbedding as Reducer
-    elif model.upper() == 'ISOMAP':
+    elif model.upper() == "ISOMAP":
         from sklearn.manifold import Isomap as Reducer
-    elif model.upper() in {'MDS', 'MULTIDIMENSIONALSCALING'}:
+    elif model.upper() in {"MDS", "MULTIDIMENSIONALSCALING"}:
         from sklearn.manifold import MDS as Reducer  # noqa:N811
-    elif model.upper() in {'SE', 'SPECTRAL', 'SPECTRALEMBEDDING'}:
+    elif model.upper() in {"SE", "SPECTRAL", "SPECTRALEMBEDDING"}:
         from sklearn.manifold import SpectralEmbedding as Reducer
     else:
-        raise ValueError(f'invalid dimensionality reduction model: {model}')
+        raise ValueError(f"invalid dimensionality reduction model: {model}")
     return Reducer, kwargs
 
 

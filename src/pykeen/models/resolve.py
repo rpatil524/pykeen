@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 """A :class:`pykeen.models.ERModel` can be constructed from :class:`pykeen.nn.modules.Interaction`.
 
 The new style-class, :class:`pykeen.models.ERModel` abstracts the interaction away from the representations
@@ -58,15 +56,18 @@ argument of :func:`pykeen.pipeline.pipeline`.
 """
 
 import logging
-from typing import Any, Mapping, Optional, Sequence, Tuple, Type, Union
+from collections.abc import Mapping, Sequence
+from typing import Any, Optional, Union
 
-from .nbase import ERModel, EmbeddingSpecificationHint
-from ..nn.emb import EmbeddingSpecification, RepresentationModule
+from class_resolver import OptionalKwargs
+
+from .nbase import ERModel
 from ..nn.modules import Interaction, interaction_resolver
+from ..typing import HeadRepresentation, RelationRepresentation, TailRepresentation
 
 __all__ = [
-    'make_model',
-    'make_model_cls',
+    "make_model",
+    "make_model_cls",
 ]
 
 logger = logging.getLogger(__name__)
@@ -74,10 +75,14 @@ logger = logging.getLogger(__name__)
 
 def make_model(
     dimensions: Union[int, Mapping[str, int]],
-    interaction: Union[str, Interaction, Type[Interaction]],
+    interaction: Union[
+        str,
+        Interaction[HeadRepresentation, RelationRepresentation, TailRepresentation],
+        type[Interaction[HeadRepresentation, RelationRepresentation, TailRepresentation]],
+    ],
     interaction_kwargs: Optional[Mapping[str, Any]] = None,
-    entity_representations: EmbeddingSpecificationHint = None,
-    relation_representations: EmbeddingSpecificationHint = None,
+    entity_representations_kwargs: OptionalKwargs = None,
+    relation_representations_kwargs: OptionalKwargs = None,
     **kwargs,
 ) -> ERModel:
     """Build a model from an interaction class hint (name or class)."""
@@ -85,8 +90,8 @@ def make_model(
         dimensions=dimensions,
         interaction=interaction,
         interaction_kwargs=interaction_kwargs,
-        entity_representations=entity_representations,
-        relation_representations=relation_representations,
+        entity_representations_kwargs=entity_representations_kwargs,
+        relation_representations_kwargs=relation_representations_kwargs,
     )
     return model_cls(**kwargs)
 
@@ -95,43 +100,57 @@ class DimensionError(ValueError):
     """Raised when the wrong dimensions were supplied."""
 
     def __init__(self, given, expected):
+        """
+        Initialize the error.
+
+        :param given:
+            the given keys
+        :param expected:
+            the expected keys
+        """
         self.given = given
         self.expected = expected
 
     def __str__(self):
-        return f'Expected dimensions dictionary with keys {self.expected} but got keys {self.given}'
+        return f"Expected dimensions dictionary with keys {self.expected} but got keys {self.given}"
 
 
 def make_model_cls(
     dimensions: Union[int, Mapping[str, int]],
-    interaction: Union[str, Interaction, Type[Interaction]],
+    interaction: Union[
+        str,
+        Interaction[HeadRepresentation, RelationRepresentation, TailRepresentation],
+        type[Interaction[HeadRepresentation, RelationRepresentation, TailRepresentation]],
+    ],
     interaction_kwargs: Optional[Mapping[str, Any]] = None,
-    entity_representations: EmbeddingSpecificationHint = None,
-    relation_representations: EmbeddingSpecificationHint = None,
-) -> Type[ERModel]:
+    entity_representations_kwargs: OptionalKwargs = None,
+    relation_representations_kwargs: OptionalKwargs = None,
+) -> type[ERModel]:
     """Build a model class from an interaction class hint (name or class)."""
     if isinstance(interaction, Interaction):
         interaction_instance = interaction
     else:
         interaction_instance = interaction_resolver.make(interaction, interaction_kwargs)
 
-    entity_representations, relation_representations = _normalize_entity_representations(
+    entity_representations_kwargs, relation_representations_kwargs = _normalize_representation_kwargs(
         dimensions=dimensions,
-        interaction=interaction_instance.__class__,
-        entity_representations=entity_representations,
-        relation_representations=relation_representations,
+        interaction=interaction_instance,  # type: ignore
+        entity_representations_kwargs=entity_representations_kwargs,
+        relation_representations_kwargs=relation_representations_kwargs,
     )
 
     # TODO pack/unpack dimensions as default kwargs such that they don't actually need to be used
     #  to create the class
 
-    class ChildERModel(ERModel):
+    class ChildERModel(ERModel[HeadRepresentation, RelationRepresentation, TailRepresentation]):
+        """A ad-hoc child class of ERModel."""
+
         def __init__(self, **kwargs) -> None:
             """Initialize the model."""
             super().__init__(
                 interaction=interaction_instance,
-                entity_representations=entity_representations,
-                relation_representations=relation_representations,
+                entity_representations_kwargs=entity_representations_kwargs,
+                relation_representations_kwargs=relation_representations_kwargs,
                 **kwargs,
             )
 
@@ -140,41 +159,28 @@ def make_model_cls(
     return ChildERModel
 
 
-def _normalize_entity_representations(
+def _normalize_representation_kwargs(
     dimensions: Union[int, Mapping[str, int]],
-    interaction: Type[Interaction],
-    entity_representations: EmbeddingSpecificationHint,
-    relation_representations: EmbeddingSpecificationHint,
-) -> Tuple[
-    Sequence[Union[EmbeddingSpecification, RepresentationModule]],
-    Sequence[Union[EmbeddingSpecification, RepresentationModule]],
-]:
+    interaction: Interaction[HeadRepresentation, RelationRepresentation, TailRepresentation],
+    entity_representations_kwargs: OptionalKwargs,
+    relation_representations_kwargs: OptionalKwargs,
+) -> tuple[Sequence[OptionalKwargs], Sequence[OptionalKwargs]]:
+    # TODO: update to hint + kwargs
     if isinstance(dimensions, int):
-        dimensions = {'d': dimensions}
+        dimensions = {"d": dimensions}
     assert isinstance(dimensions, dict)
-    if set(dimensions) < interaction.get_dimensions():
-        raise DimensionError(set(dimensions), interaction.get_dimensions())
-    if entity_representations is None:
-        # TODO: Does not work for interactions with separate tail_entity_shape (i.e., ConvE)
-        if interaction.tail_entity_shape is not None:
-            raise NotImplementedError
-        entity_representations = [
-            EmbeddingSpecification(shape=tuple(
-                dimensions[d]
-                for d in shape
-            ))
-            for shape in interaction.entity_shape
+    if set(dimensions) < interaction.dimensions:
+        raise DimensionError(set(dimensions), interaction.dimensions)
+    if entity_representations_kwargs is None:
+        entity_representations_kwargs = [
+            dict(shape=tuple(dimensions[d] for d in shape)) for shape in interaction.entity_shape
         ]
-    elif not isinstance(entity_representations, Sequence):
-        entity_representations = [entity_representations]
-    if relation_representations is None:
-        relation_representations = [
-            EmbeddingSpecification(shape=tuple(
-                dimensions[d]
-                for d in shape
-            ))
-            for shape in interaction.relation_shape
+    elif not isinstance(entity_representations_kwargs, Sequence):
+        entity_representations_kwargs = [entity_representations_kwargs]
+    if relation_representations_kwargs is None:
+        relation_representations_kwargs = [
+            dict(shape=tuple(dimensions[d] for d in shape)) for shape in interaction.relation_shape
         ]
-    elif not isinstance(relation_representations, Sequence):
-        relation_representations = [relation_representations]
-    return entity_representations, relation_representations
+    elif not isinstance(relation_representations_kwargs, Sequence):
+        relation_representations_kwargs = [relation_representations_kwargs]
+    return entity_representations_kwargs, relation_representations_kwargs

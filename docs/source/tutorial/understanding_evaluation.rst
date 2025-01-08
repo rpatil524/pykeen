@@ -1,3 +1,5 @@
+.. _understanding-evaluation:
+
 Understanding the Evaluation
 ============================
 This part of the tutorial is aimed to help you understand the evaluation of knowledge graph embeddings.
@@ -36,103 +38,51 @@ number.
     `0-based <https://en.wikipedia.org/wiki/Zero-based_numbering>`_  or
     1-based (natural). PyKEEN uses 1-based indexing to conform with related work.
 
+
+As an example, consider we trained a KGEM on the countries dataset, e.g., using
+
+.. code-block:: python
+
+    from pykeen.datasets import get_dataset
+    from pykeen.pipeline import pipeline
+    dataset = get_dataset(dataset="countries")
+    result = pipeline(dataset=dataset, model="mure", random_seed=42, training_kwargs=dict(num_epochs=100))
+
+During evaluation time, we now evaluate head and tail prediction, i.e., whether we can predict the correct
+head/tail entity from the remainder of a triple. The first triple in the test split of this dataset is
+`['belgium', 'locatedin', 'europe']`. Thus, for tail prediction, we aim to answer `['belgium', 'locatedin', ?]`.
+We can see the results using the prediction workflow:
+
+.. code-block:: python
+
+    from pykeen.predict import predict_target
+
+    df = predict_target(
+        model=result.model,
+        head="belgium",
+        relation="locatedin",
+        triples_factory=result.training,
+    )
+
+which returns a dataframe of all tail candidate entities sorted according to the predicted score.
+The index in this sorted list is essentially the *rank* of the correct answer.
+Here is what the first 5 rows of this table look like:
+
+=======  ========  ===================
+tail_id  score     tail_label
+=======  ========  ===================
+265      -1.02144  western_europe
+77       -1.7295   europe
+69       -2.21642  eastern_europe
+216      -2.32269  south-eastern_asia
+173      -2.39417  northern_europe
+=======  ========  ===================
+
 Rank-Based Metrics
 ~~~~~~~~~~~~~~~~~~
-Given the set of individual rank scores $\mathcal{I}$, the following scores are commonly used as aggregation.
-
-Hits @ K
-********
-The hits @ k describes the fraction of true entities that appear in the first $k$ entities of the sorted rank list.
-It is given as:
-
-.. math::
-
-    \text{score}_k = \frac{1}{|\mathcal{I}|} \sum \limits_{r \in \mathcal{I}} \mathbb{I}[r \leq k]
-
-For example, if Google shows 20 results on the first page, then the percentage of results that are relevant is the
-hits @ 20. The hits @ k, regardless of $k$, lies on the $[0, 1]$ where closer to 1 is better.
-
-.. warning::
-
-    This metric does not differentiate between cases when the rank is larger than $k$.
-    This means that a miss with rank $k+1$ and $k+d$ where $d \gg 1$ have the same
-    effect on the final score. Therefore, it is less suitable for the comparison of different
-    models.
-
-Mean Rank
-*********
-The mean rank (MR) computes the arithmetic mean over all individual ranks. It is given as:
-
-.. math::
-
-    \text{score} =\frac{1}{|\mathcal{I}|} \sum \limits_{r \in \mathcal{I}} r
-
-It has the advantage over hits @ k that it is sensitive to any model performance changes, not only what occurs
-under a certain cutoff and therefore reflects average performance. With PyKEEN's standard 1-based indexing,
-the mean rank lies on the interval $[1, \infty)$ where lower is better.
-
-.. warning::
-
-    While it remains interpretable, the mean rank is dependent on the number of candidates.
-    A mean rank of 10 might indicate strong performance for a candidate set size of 1,000,000,
-    but incredibly poor performance for a candidate set size of 20.
-
-Adjusted Mean Rank
-******************
-The adjusted mean rank (AMR) was introduced by [berrendorf2020]_. It is defined as
-
-.. math::
-
-    \text{score} = \frac{MR}{\mathbb{E}\left[MR\right]} = \frac{2 \sum_{i=1}^{n} r_{i}}{\sum_{i=1}^{n} (|\mathcal{S}_i|+1)}
-
-The derivations of $\mathbb{E}\left[MR\right]$ and $\mathcal{S}_i$ are contained within the original manuscript.
-
-It lies on the open interval $(0, 2)$ where lower is better.
-
-Adjusted Mean Rank Index
-************************
-The adjusted mean rank index (AMRI) was introduced by [berrendorf2020]_ to make the AMR
-more intuitive.
-
-.. math::
-
-    \text{score} = 1 - \frac{MR - 1}{\mathbb{E}\left[MR - 1\right]} = \frac{2 \sum_{i=1}^{n} (r_{i} - 1)}{\sum_{i=1}^{n} (|\mathcal{S}_i|)}
-
-The AMR has a bounded value range of $[-1, 1]$ where closer to 1 is better.
-
-Mean Reciprocal Rank
-********************
-The mean reciprocal rank (MRR) is the arithmetic mean of reciprocal ranks, and thus the inverse of the harmonic mean
-of the ranks. It is defined as:
-
-.. math::
-
-    \text{score} =\frac{1}{|\mathcal{I}|} \sum_{r \in \mathcal{I}} r^{-1}
-
-.. warning::
-
-    It has been argued that the mean reciprocal rank has theoretical flaws by [fuhr2018]_. However, this opinion
-    is not undisputed, cf. [sakai2021]_.
-
-Despite its flaws, MRR is still often used during early stopping due to its behavior related to low rank values.
-While the hits @ k ignores changes among high rank values completely and the mean rank changes uniformly
-across the full value range, the mean reciprocal rank is more affected by changes of low rank values than high ones
-(without disregarding them completely like hits @ k does for low rank values)
-Therefore, it can be considered as soft a version of hits @ k that is less sensitive to outliers.
-It is bound on $(0, 1]$ where closer to 1 is better.
-
-Inverse Geometric Mean Rank
-***************************
-The mean rank corresponds to the arithmetic mean, and tends to be more affected by high rank values.
-The mean reciprocal rank corresponds to the harmonic mean, and tends to be more affected by low rank values.
-The remaining Pythagorean mean, the geometric mean, lies in the center and therefore could better balance these biases.
-Therefore, the inverse geometric mean rank (IGMR) is defined as:
-
-.. math::
-
-    \text{score} = \sqrt[\|\mathcal{I}\|]{\prod \limits_{r \in \mathcal{I}} r}
-
-.. note:: This metric is novel as of its implementation in PyKEEN and was proposed by Max Berrendorf
+Given the set of individual rank scores for each head/tail entity from evaluation triples, there are various
+aggregation metrics which summarize different aspects of the set of ranks into a single-figure number.
+For more details, please refer to their `documentation <../reference/metrics.html>`_.
 
 Ranking Types
 ~~~~~~~~~~~~~
@@ -148,7 +98,8 @@ variants have been implemented, which yield different results in the presence of
   tie breaking mechanism of the sort algorithm's implementation.
 
 PyKEEN supports the first three: optimistic, pessimistic and realistic. When only using a single score, the
-realistic score should be reported. The pessimistic and optimistic rank, or more specific the deviation between both,
+realistic score should be reported.
+The pessimistic and optimistic rank, or more specifically the deviation between both,
 can be used to detect whether a model predicts exactly equal scores for many choices. There are a few causes such as:
 
 * finite-precision arithmetic in conjunction with explicitly using sigmoid activation
@@ -169,6 +120,43 @@ both    The rank-based metric evaluated on both predictions.
 By default, "both" is often used in publications. The side-specific scores can however often give access to
 interesting insights, such as the difference in difficulty of predicting a head/tail given the rest, or the model's
 incapability to solve of one the tasks.
+
+Ranking Aggregation Scope
+~~~~~~~~~~~~~~~~~~~~~~~~~
+Real graphs often are `scale-free <https://en.wikipedia.org/wiki/Scale-free_network>`_, i.e., there are a few
+nodes / entities which have a high degree, often called `hub <https://en.wikipedia.org/wiki/Hub_(network_science)>`_,
+while the majority of nodes has only a few neighbors. This also impacts the evaluation triples: since the hub nodes
+occur in a large number of triples, they are also more likely to be part of evaluation triples.
+Thus, performing well on triples containing hub entities contributes strongly to the overall performance.
+
+As an example, we can inspect the :class:`pykeen.datasets.WD50KT` dataset, where a single (relation, tail)-combination,
+(`"instance of" <https://www.wikidata.org/wiki/Property:P31>`_, `"human" <https://www.wikidata.org/wiki/Q5>`_),
+is present in 699 evaluation triples.
+
+.. code-block:: python
+
+    from pykeen.datasets import get_dataset
+    ds = get_dataset(dataset="wd50kt")
+    unique_relation_tail, counts = dataset.testing.mapped_triples[:, 1:].unique(return_counts=True, dim=0)
+    # c = 699
+    c = counts.max()
+    r, t = unique_relation_tail[counts.argmax()]
+    # https://www.wikidata.org/wiki/Q5 -> "human"
+    t = dataset.testing.entity_id_to_label[t.item()]
+    # https://www.wikidata.org/wiki/Property:P31 -> "instance of"
+    r = dataset.testing.relation_id_to_label[r.item()]
+
+There are arguments that we want these entities to have a strong effect on evaluation: since they occur often, they
+are seemingly important, and thus evaluation should reflect that. However, sometimes we also do *not* want to have
+this effect, but rather measure the performance evenly across nodes. A similar phenomenon also exists in multi-class
+classification with imbalanced classes, where frequent classes can dominate performance measures.
+In similar vein to the macro :math:`F_1`-score (cf. :func:`sklearn.metrics.f1_score`) known from this area, PyKEEN
+implements a :class:`pykeen.evaluation.MacroRankBasedEvaluator`, which ensure that triples are weighted such that each
+unique ranking task, e.g., a (head, relation)-pair for tail prediction, contributes evenly.
+
+Technically, we solve the task by implemented variants of existing rank-based metrics which support weighting
+individual ranks differently. Moreover, the evaluator computes weights inversely proportional to the "query" part
+of the ranking task, i.e., e.g., (head, relation) for tail prediction.
 
 Filtering
 ~~~~~~~~~
@@ -202,7 +190,7 @@ Pipeline Scenario
 During vanilla training with the :func:`pykeen.pipeline.pipeline` that has no optimization, no early stopping, nor
 any *post-hoc* choices using the validation set, the set of known positive triples comprises the training and
 testing sets. This scenario is very atypical, and regardless, should be augmented with the validation triples
-to make more comparable to other published results that do not consider this scenario.
+to make it more comparable to other published results that do not consider this scenario.
 
 Custom Training Loops
 *********************
@@ -256,7 +244,7 @@ Entity and Relation Restriction
 Sometimes, we are only interested in a certain set of entities and/or relations,
 :math:`\mathcal{E}_I \subset \mathcal{E}` and :math:`\mathcal{R}_I \subset \mathcal{R}` respectively,
 but have additional information available in form of triples with other entities/relations.
-As example, we would like to predict whether an actor stars in a movie. Thus, we are only interested in the relation
+As an example, we would like to predict whether an actor stars in a movie. Thus, we are only interested in the relation
 `stars_in` between entities which are actors/movies. However, we may have additional information available, e.g.
 who directed the movie, or the movie's language, which may help in the prediction task. Thus, we would like to train the
 model on the full dataset including all available relations and entities, but restrict the evaluation to the task we

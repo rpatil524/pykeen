@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 """Test the integrity of the reproduction experiment scripts."""
 
 import logging
@@ -20,7 +18,7 @@ def _generate(model, config, path):  # noqa: D202
     def _x(test_case: unittest.TestCase):
         errors = get_configuration_errors(path)
         if errors:
-            msg = f'Errors found in {model}/{config}:\n' + '\n'.join(f'  {error}' for error in errors)
+            msg = f"Errors found in {model}: {config}:\n" + "\n".join(f"  {error}" for error in errors)
             test_case.fail(msg)
 
     return _x
@@ -29,11 +27,11 @@ def _generate(model, config, path):  # noqa: D202
 def _append():
     """Append all new tests for each configuration."""
     for model, config, path in iterate_config_paths():
-        if model == 'rgcn':
-            logger.warning('Way too much to do for RGCN...')
+        if model == "rgcn":
+            logger.warning("Way too much to do for RGCN...")
             continue
         _x = _generate(model, config, path)
-        _x.__name__ = f'test_integrity_{model}_{config[:-len(".json")]}'
+        _x.__name__ = f"test_integrity_{model}_{config.stem}"
         setattr(TestExperimentIntegrity, _x.__name__, _x)
 
 

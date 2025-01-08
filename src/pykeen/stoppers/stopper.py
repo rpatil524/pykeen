@@ -1,17 +1,16 @@
-# -*- coding: utf-8 -*-
-
 """Basic stoppers."""
 
 import logging
 import pathlib
 from abc import ABC, abstractmethod
-from typing import Any, List, Mapping, Union
+from collections.abc import Mapping
+from typing import Any, Union
 
 import torch
 
 __all__ = [
-    'Stopper',
-    'NopStopper',
+    "Stopper",
+    "NopStopper",
 ]
 
 logger = logging.getLogger(__name__)
@@ -21,6 +20,14 @@ class Stopper(ABC):
     """A harness for stopping training."""
 
     def __init__(self, *args, **kwargs):
+        """
+        Initialize the stopper.
+
+        :param args:
+            ignored positional parameters
+        :param kwargs:
+            ignored keyword-based parameters
+        """
         # To make MyPy happy
         self.best_epoch = None
 
@@ -38,14 +45,16 @@ class Stopper(ABC):
         """Get a summary dict."""
         raise NotImplementedError
 
-    def _write_from_summary_dict(
+    def _write_from_summary_dict(  # noqa: B027
         self,
+        *,
         frequency: int,
         patience: int,
+        remaining_patience: int,
         relative_delta: float,
         metric: str,
         larger_is_better: bool,
-        results: List[float],
+        results: list[float],
         stopped: bool,
         best_epoch: int,
         best_metric: float,
@@ -65,7 +74,7 @@ class Stopper(ABC):
         logger.info(f"=> loading stopper summary dict from training loop checkpoint in '{path}'")
         checkpoint = torch.load(path)
         logger.info(f"=> loaded stopper summary dictionary from checkpoint in '{path}'")
-        return checkpoint['stopper_dict']
+        return checkpoint["stopper_dict"]
 
 
 class NopStopper(Stopper):

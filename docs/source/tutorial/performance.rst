@@ -28,7 +28,7 @@ triples are stored in a tensor :data:``pykeen.triples.TriplesFactory.mapped_trip
 Tuple Broadcasting
 ------------------
 Interaction functions are usually only given for the standard case of scoring a single triple $(h, r, t)$. This function
-is in PyKEEN implemented in the :func:`pykeen.models.base.Model.score_hrt` method of each model, e.g.
+is implemented in PyKEEN in the :func:`pykeen.models.base.Model.score_hrt` method of each model, e.g.
 :func:`pykeen.models.DistMult.score_hrt` for :class:`pykeen.models.DistMult`. When training under the local closed
 world assumption (LCWA), evaluating a model, and performing the link prediction task, the goal is to score all
 entities/relations for a given tuple, i.e. $(h, r)$, $(r, t)$ or $(h, t)$. In these cases a single tuple is used
@@ -127,16 +127,39 @@ $H^{\text{filtered}}_{r,t}$ is obtained from $H_{r,t}$ in a similar fashion.
 
 .. _sub_batching:
 
-Sub-batching
-------------
+Sub-batching & Slicing
+----------------------
 With growing model and dataset sizes the KGEM at hand is likely to exceed the memory provided by GPUs. Especially during
 training it might be desired to train using a certain batch size. When this batch size is too big for the hardware at
-hand, PyKEEN allows to set a sub-batch size in the range of :math:`[1, {batch size}]`. When the sub-batch size is set,
-PyKEEN automatically accumulates the gradients after each sub-batch and clears the computational graph during training.
+hand, PyKEEN allows to set a sub-batch size in the range of :math:`[1, \text{batch_size}]`.
+When the sub-batch size is set, PyKEEN automatically accumulates the gradients after each sub-batch and clears the
+computational graph during training.
 This allows to train KGEMs on GPU that otherwise would be too big for the hardware at hand, while the obtained results
-are identical to training without sub-batching. Note: In order to guarantee this, not all models support sub-batching,
-since certain components, e.g. batch normalization, require the entire batch to be calculated in one pass to avoid
-altering statistics.
+are identical to training without sub-batching.
+
+.. note::
+    In order to guarantee equivalent results, not all models support sub-batching, since certain components,
+    e.g. batch normalization, require the entire batch to be calculated in one pass to avoid altering statistics.
+
+.. note::
+    Sub-batching is sometimes also called *Gradient Accumulation*, e.g., by huggingface's
+    `transformer <https://huggingface.co/docs/transformers/master/en/main_classes/deepspeed#gradient-accumulation>`_
+    library, since we accumulate the gradients over multiple sub-batches before updating the parameters.
+
+For some large configurations, even after applying the sub-batching trick, out-of-memory errors may still occur.
+In this case,  PyKEEN implements another technique, called *slicing*.
+Note that we often compute more than one score for each batch element:
+in sLCWA, we have :math:`1 + \text{num_negative_samples}` scores, and in LCWA, we have
+:math:`\text{num_entities}` scores for each batch element.
+In slicing, we do not compute all of these scores at once, but rather in smaller "batches".
+For old-style models, i.e., those subclassing from :class:`pykeen.models.base._OldAbstractModel`, this has to be
+implemented individually for each of them.
+New-style models, i.e., those deriving from :class:`pykeen.models.nbase.ERModel` have a generic implementation enabling
+slicing for *all* interactions.
+
+.. note::
+    Slicing computes the scores in smaller batches, but still needs to compute the gradient over all scores,
+    since some loss functions require access to them.
 
 Automated Memory Optimization
 -----------------------------
@@ -151,17 +174,18 @@ above described process :ref:`sub_batching`. The batch sizes are determined usin
 consideration the `CUDA architecture <https://developer.download.nvidia.com/video/gputechconf/gtc/2019/presentation/s9926-tensor-core-performance-the-ultimate-guide.pdf>`_
 which ensures that the chosen batch size is the most CUDA efficient one.
 
-Evaluation Fallback
--------------------
-Usually the evaluation is performed on the GPU for faster speeds. In addition, users might choose a batch size upfront
+Usually the evaluation is performed on the GPU for faster speeds. Thanks for `torch_max_mem`, you can fully leave
+finding a maximal batch size to PyKEEN.
+In addition, users might choose a batch size upfront
 in their evaluation configuration to fully utilize the GPU to achieve the fastest evaluation speeds possible.
 However, during larger setups testing different model configurations and dataset partitions such as e.g. HPO the
 hardware requirements might change drastically, which might cause that the evaluation no longer can be run with the
 pre-set batch size or not on the GPU at all for larger datasets and memory intense models.
-Since PyKEEN will abide by the user configurations, the evaluation will crash in these cases even though the training
-finished successfully and thus loose the progress achieved and/or leave trials unfinished.
-Given that the batch size and the device have no impact on the evaluation results, PyKEEN offers a way to overcome this
-problem through the evaluation fallback option of the pipeline. This will cause the evaluation to fall back to using a
-smaller batch size in cases where the evaluation failed using the GPU with a set batch size and in the last instance to
-evaluate on the CPU, if even the smallest possible batch size is too big for the GPU.
+In these cases, `torch_max_mem` will take care of lowering the actual batch size until no more out of memory errors
+occur.
+
+Evaluation Fallback
+-------------------
+In some cases, it is possible that evaluation cannot succeed on GPU even with minimal batch size and slicing.
+In these rare cases, PyKEEN offers to fall back to CPU.
 Note: This can lead to significantly longer evaluation times in cases where the evaluation falls back to using the CPU.

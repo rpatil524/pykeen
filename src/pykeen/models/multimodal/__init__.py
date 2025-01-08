@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 """Multimodal KGE Models.
 
 .. [kristiadi2018] Kristiadi, A.., *et al.* (2018) `Incorporating literals into knowledge graph embeddings.
@@ -9,9 +7,11 @@
 from .base import LiteralModel
 from .complex_literal import ComplExLiteral
 from .distmult_literal import DistMultLiteral
+from .distmult_literal_gated import DistMultLiteralGated
 
 __all__ = [
-    'LiteralModel',
-    'ComplExLiteral',
-    'DistMultLiteral',
+    "LiteralModel",
+    "ComplExLiteral",
+    "DistMultLiteral",
+    "DistMultLiteralGated",
 ]

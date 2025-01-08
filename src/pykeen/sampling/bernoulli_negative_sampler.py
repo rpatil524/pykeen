@@ -1,18 +1,13 @@
-# -*- coding: utf-8 -*-
-
 """Negative sampling algorithm based on the work of [wang2014]_."""
 
-from typing import Any, Mapping, Optional, Tuple
-
 import torch
-from class_resolver import HintOrType
 
-from .filtering import Filterer
+from .basic_negative_sampler import random_replacement_
 from .negative_sampler import NegativeSampler
-from ..triples import CoreTriplesFactory
+from ..typing import COLUMN_HEAD, COLUMN_TAIL, LongTensor, MappedTriples
 
 __all__ = [
-    'BernoulliNegativeSampler',
+    "BernoulliNegativeSampler",
 ]
 
 
@@ -38,108 +33,67 @@ class BernoulliNegativeSampler(NegativeSampler):
     actual positive triples $(h,r,t) \in \mathcal{K}$ will be removed.
     """
 
-    #: The default strategy for optimizing the negative sampler's hyper-parameters
-    hpo_default = dict(
-        num_negs_per_pos=dict(type=int, low=1, high=100, q=10),
-    )
-
     def __init__(
         self,
-        triples_factory: CoreTriplesFactory,
-        num_negs_per_pos: Optional[int] = None,
-        filtered: bool = False,
-        filterer: HintOrType[Filterer] = None,
-        filterer_kwargs: Optional[Mapping[str, Any]] = None,
+        *,
+        mapped_triples: MappedTriples,
+        **kwargs,
     ) -> None:
         """Initialize the bernoulli negative sampler with the given entities.
 
-        :param triples_factory: The factory holding the triples to sample from
-        :param num_negs_per_pos: Number of negative samples to make per positive triple. Defaults to 1.
-        :param filtered: Whether proposed corrupted triples that are in the training data should be filtered.
-            Defaults to False. See explanation in :func:`filter_negative_triples` for why this is
-            a reasonable default.
-        :param filterer: If filtered is set to True, this can be used to choose which filter module from
-            :mod:`pykeen.sampling.filtering` is used.
-        :param filterer_kwargs:
-            Additional keyword-based arguments passed to the filterer upon construction.
+        :param mapped_triples:
+            the positive training triples
+        :param kwargs:
+            Additional keyword based arguments passed to :class:`pykeen.sampling.NegativeSampler`.
         """
-        super().__init__(
-            triples_factory=triples_factory,
-            num_negs_per_pos=num_negs_per_pos,
-            filtered=filtered,
-            filterer=filterer,
-            filterer_kwargs=filterer_kwargs,
-        )
+        super().__init__(mapped_triples=mapped_triples, **kwargs)
         # Preprocessing: Compute corruption probabilities
-        triples = triples_factory.mapped_triples
-        head_rel_uniq, tail_count = torch.unique(triples[:, :2], return_counts=True, dim=0)
-        rel_tail_uniq, head_count = torch.unique(triples[:, 1:], return_counts=True, dim=0)
+        head_rel_uniq, tail_count = torch.unique(mapped_triples[:, :2], return_counts=True, dim=0)
+        rel_tail_uniq, head_count = torch.unique(mapped_triples[:, 1:], return_counts=True, dim=0)
 
         self.corrupt_head_probability = torch.empty(
-            triples_factory.num_relations,
-            device=triples_factory.mapped_triples.device,
+            self.num_relations,
+            device=mapped_triples.device,
         )
 
-        for r in range(triples_factory.num_relations):
+        for r in range(self.num_relations):
             # compute tph, i.e. the average number of tail entities per head
-            mask = (head_rel_uniq[:, 1] == r)
+            mask = head_rel_uniq[:, 1] == r
             tph = tail_count[mask].float().mean()
 
             # compute hpt, i.e. the average number of head entities per tail
-            mask = (rel_tail_uniq[:, 0] == r)
+            mask = rel_tail_uniq[:, 0] == r
             hpt = head_count[mask].float().mean()
 
             # Set parameter for Bernoulli distribution
             self.corrupt_head_probability[r] = tph / (tph + hpt)
 
-    def sample(self, positive_batch: torch.LongTensor) -> Tuple[torch.LongTensor, Optional[torch.Tensor]]:
-        """Sample a negative batched based on the bern approach."""
-        if self.num_negs_per_pos > 1:
-            positive_batch = positive_batch.repeat(self.num_negs_per_pos, 1)
+    # docstr-coverage: inherited
+    def corrupt_batch(self, positive_batch: LongTensor) -> LongTensor:  # noqa: D102
+        batch_shape = positive_batch.shape[:-1]
 
-        # Bind number of negatives to sample
-        num_negs = positive_batch.shape[0]
-
-        # Copy positive batch for corruption.
-        # Do not detach, as no gradients should flow into the indices.
-        negative_batch = positive_batch.clone()
-
-        device = positive_batch.device
         # Decide whether to corrupt head or tail
-        head_corruption_probability = self.corrupt_head_probability[positive_batch[:, 1]]
-        head_mask = torch.rand(num_negs, device=device) < head_corruption_probability.to(device=device)
+        head_corruption_probability = self.corrupt_head_probability[positive_batch[..., 1]].unsqueeze(dim=-1)
+        head_mask = torch.rand(
+            *batch_shape, self.num_negs_per_pos, device=positive_batch.device
+        ) < head_corruption_probability.to(device=positive_batch.device)
 
-        # Tails are corrupted if heads are not corrupted
-        tail_mask = ~head_mask
+        # clone positive batch for corruption (.repeat_interleave creates a copy)
+        negative_batch = positive_batch.view(-1, 3).repeat_interleave(self.num_negs_per_pos, dim=0)
+        # flatten mask
+        head_mask = head_mask.view(-1)
 
-        index_max = self.num_entities
-        # If we do not use a filterer, we at least make sure to not replace the triples by the original value
-        # See below for explanation of why this is on a range of [0, num_entities - 1]
-        if self.filterer is None:
-            index_max -= 1
+        for index, mask in (
+            (COLUMN_HEAD, head_mask),
+            # Tails are corrupted if heads are not corrupted
+            (COLUMN_TAIL, ~head_mask),
+        ):
+            random_replacement_(
+                batch=negative_batch,
+                index=index,
+                selection=mask,
+                size=mask.sum(),
+                max_index=self.num_entities,
+            )
 
-        # Randomly sample corruption.
-        negative_entities = torch.randint(
-            index_max,
-            size=(num_negs,),
-            device=positive_batch.device,
-        )
-
-        # Replace heads
-        negative_batch[head_mask, 0] = negative_entities[head_mask]
-
-        # Replace tails
-        negative_batch[tail_mask, 2] = negative_entities[tail_mask]
-
-        # If filtering is activated, all negative triples that are positive in the training dataset will be removed
-        if self.filterer is not None:
-            negative_batch, batch_filter = self.filterer(negative_batch=negative_batch)
-        else:
-            # To make sure we don't replace the head by the original value
-            # we shift all values greater or equal than the original value by one up
-            # for that reason we choose the random value from [0, num_entities -1]
-            negative_batch[head_mask, 0] += (negative_batch[head_mask, 0] >= positive_batch[head_mask, 0]).long()
-            negative_batch[tail_mask, 2] += (negative_batch[tail_mask, 2] >= positive_batch[tail_mask, 2]).long()
-            batch_filter = None
-
-        return negative_batch, batch_filter
+        return negative_batch.view(*batch_shape, self.num_negs_per_pos, 3)
